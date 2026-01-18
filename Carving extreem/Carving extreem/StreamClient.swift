@@ -223,6 +223,8 @@ final class StreamClient: NSObject, ObservableObject {
         var state = calibrationState
         state.accelOffset = [sample.ax, sample.ay, sample.az]
         state.gyroOffset = [sample.gx, sample.gy, sample.gz]
+        state.forwardReference = 0
+        state.sideReference = 0
         state.isCalibrated = false
         saveCalibration(state)
     }
@@ -244,6 +246,13 @@ final class StreamClient: NSObject, ObservableObject {
         let ay = sample.ay - calibrationState.accelOffset[1]
         let az = sample.az - calibrationState.accelOffset[2]
         let roll = atan2(ay, az) * 180 / .pi
+        var state = calibrationState
+        state.sideReference = roll
+        state.isCalibrated = true
+        saveCalibration(state)
+    }
+
+    func captureSideReference(roll: Double) {
         var state = calibrationState
         state.sideReference = roll
         state.isCalibrated = true
