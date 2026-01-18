@@ -733,55 +733,55 @@ private struct RunSessionView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 20) {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Run mode")
-                                .font(.title2.bold())
-                            Text("Edge angle (accelerometer-based)")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
+            ScrollView {
+                VStack(spacing: 20) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Run mode")
+                                    .font(.title2.bold())
+                                Text("Edge angle (accelerometer-based)")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(timeString(from: session.elapsed))
+                                .font(.headline.weight(.semibold))
                         }
-                        Spacer()
-                        Text(timeString(from: session.elapsed))
-                            .font(.headline.weight(.semibold))
+
+                        Chart(session.edgeSamples) { sample in
+                            LineMark(x: .value("Time", sample.timestamp), y: .value("Angle", sample.angle))
+                                .interpolationMethod(.catmullRom)
+                            AreaMark(x: .value("Time", sample.timestamp), y: .value("Angle", sample.angle))
+                                .foregroundStyle(.linearGradient(
+                                    colors: [Color.blue.opacity(0.4), Color.blue.opacity(0.05)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                ))
+                        }
+                        .chartYScale(domain: 0...90)
+                        .frame(height: 220)
+
+                        runStats
+
+                        HStack {
+                            Label("Turn count", systemImage: "repeat")
+                                .font(.subheadline.weight(.semibold))
+                            Spacer()
+                            Text("\(session.turnCount)")
+                                .font(.headline.weight(.semibold))
+                        }
                     }
+                    .padding()
+                    .background(Color(.secondarySystemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 20))
 
-                    Chart(session.edgeSamples) { sample in
-                        LineMark(x: .value("Time", sample.timestamp), y: .value("Angle", sample.angle))
-                            .interpolationMethod(.catmullRom)
-                        AreaMark(x: .value("Time", sample.timestamp), y: .value("Angle", sample.angle))
-                            .foregroundStyle(.linearGradient(
-                                colors: [Color.blue.opacity(0.4), Color.blue.opacity(0.05)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ))
-                    }
-                    .chartYScale(domain: 0...90)
-                    .frame(height: 220)
-
-                    runStats
-
-                    HStack {
-                        Label("Turn count", systemImage: "repeat")
-                            .font(.subheadline.weight(.semibold))
-                        Spacer()
-                        Text("\(session.turnCount)")
-                            .font(.headline.weight(.semibold))
+                    if session.isStopped {
+                        RunAnalysisView(run: session.buildRunRecord(runNumber: runStore.runNumber(for: Date())))
                     }
                 }
                 .padding()
-                .background(Color(.secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 20))
-
-                if session.isStopped {
-                    RunAnalysisView(run: session.buildRunRecord(runNumber: runStore.runNumber(for: Date())))
-                }
-
-                Spacer()
             }
-            .padding()
             .navigationTitle("Run")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
