@@ -12,6 +12,7 @@ struct ContentView: View {
     @StateObject private var client = StreamClient()
     @StateObject private var session = RideSessionViewModel()
     @StateObject private var locationManager = RideLocationManager()
+    @StateObject private var runStore = RunDataStore()
     @State private var showCalibration = false
     @State private var didAutoConnect = false
     @State private var showCalibrationRequired = false
@@ -30,6 +31,8 @@ struct ContentView: View {
                     runControlCard
 
                     calibrationCard
+
+                    openSavedRunsCard
                 }
                 .padding()
             }
@@ -56,7 +59,12 @@ struct ContentView: View {
             CalibrationFlowView(client: client)
         }
         .fullScreenCover(isPresented: $showRunSession) {
-            RunSessionView(session: session, client: client, locationManager: locationManager)
+            RunSessionView(
+                session: session,
+                client: client,
+                locationManager: locationManager,
+                runStore: runStore
+            )
         }
         .alert("Calibration required", isPresented: $showCalibrationRequired) {
             Button("Start calibration") {
@@ -264,6 +272,28 @@ struct ContentView: View {
         let minutes = Int(interval) / 60
         let seconds = Int(interval) % 60
         return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    private var openSavedRunsCard: some View {
+        NavigationLink(destination: SavedRunsView(runStore: runStore)) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Open saved runs")
+                        .font(.headline)
+                    Text("Review past sessions and turns.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .foregroundStyle(.secondary)
+            }
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.secondarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 20))
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -697,6 +727,8 @@ private struct RunSessionView: View {
     @ObservedObject var session: RideSessionViewModel
     @ObservedObject var client: StreamClient
     @ObservedObject var locationManager: RideLocationManager
+    @ObservedObject var runStore: RunDataStore
+    @State private var saveError: String?
 
     var body: some View {
         NavigationStack {
@@ -716,29 +748,35 @@ private struct RunSessionView: View {
                     }
 
                     Chart(session.edgeSamples) { sample in
-                        LineMark(
-                            x: .value("Time", sample.timestamp),
-                            y: .value("Angle", sample.angle)
-                        )
-                        .interpolationMethod(.catmullRom)
-                        AreaMark(
-                            x: .value("Time", sample.timestamp),
-                            y: .value("Angle", sample.angle)
-                        )
-                        .foregroundStyle(.linearGradient(
-                            colors: [Color.blue.opacity(0.4), Color.blue.opacity(0.05)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ))
+                        LineMark(x: .value("Time", sample.timestamp), y: .value("Angle", sample.angle))
+                            .interpolationMethod(.catmullRom)
+                        AreaMark(x: .value("Time", sample.timestamp), y: .value("Angle", sample.angle))
+                            .foregroundStyle(.linearGradient(
+                                colors: [Color.blue.opacity(0.4), Color.blue.opacity(0.05)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ))
                     }
                     .chartYScale(domain: 0...90)
                     .frame(height: 220)
 
                     runStats
+
+                    HStack {
+                        Label("Turn count", systemImage: "repeat")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Text("\(session.turnCount)")
+                            .font(.headline.weight(.semibold))
+                    }
                 }
                 .padding()
                 .background(Color(.secondarySystemBackground))
                 .clipShape(RoundedRectangle(cornerRadius: 20))
+
+                if session.isStopped {
+                    RunAnalysisView(run: session.buildRunRecord(runNumber: runStore.runNumber(for: Date())))
+                }
 
                 Spacer()
             }
@@ -747,20 +785,54 @@ private struct RunSessionView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Stop") {
-                        session.stopRun()
-                        dismiss()
+                    if session.isRunning {
+                        Button("Stop") {
+                            session.stopRun()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.red)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
+                }
+                if session.isStopped {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close") {
+                            dismiss()
+                        }
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Save") {
+                            saveRun()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
                 }
             }
         }
-        .interactiveDismissDisabled()
+        .interactiveDismissDisabled(session.isRunning)
         .onReceive(client.$latestEdgeAngle) { angle in
-            guard session.isRunning, client.latestSample != nil else { return }
+            guard session.isRunning, let sample = client.latestSample else { return }
             let speed = max(locationManager.speedMetersPerSecond, 0)
-            session.ingest(edgeAngle: angle, speedMetersPerSecond: speed)
+            let location = locationManager.latestLocation.map { location in
+                LocationSample(
+                    timestamp: location.timestamp,
+                    latitude: location.coordinate.latitude,
+                    longitude: location.coordinate.longitude,
+                    altitude: location.altitude,
+                    speed: location.speed,
+                    horizontalAccuracy: location.horizontalAccuracy
+                )
+            }
+            session.ingest(
+                sample: sample,
+                edgeAngle: angle,
+                speedMetersPerSecond: speed,
+                location: location
+            )
+        }
+        .alert("Save failed", isPresented: Binding(get: { saveError != nil }, set: { _ in saveError = nil })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(saveError ?? "Unknown error")
         }
     }
 
@@ -805,6 +877,17 @@ private struct RunSessionView: View {
         let minutes = Int(interval) / 60
         let seconds = Int(interval) % 60
         return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    private func saveRun() {
+        do {
+            let runNumber = runStore.runNumber(for: Date())
+            let run = session.buildRunRecord(runNumber: runNumber)
+            try runStore.save(run: run)
+            dismiss()
+        } catch {
+            saveError = error.localizedDescription
+        }
     }
 }
 

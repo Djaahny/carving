@@ -6,6 +6,7 @@ import Foundation
 final class RideLocationManager: NSObject, ObservableObject {
     @Published private(set) var speedMetersPerSecond: Double = 0
     @Published private(set) var status: String = ""
+    @Published private(set) var latestLocation: CLLocation?
 
     private let manager = CLLocationManager()
 
@@ -45,6 +46,7 @@ extension RideLocationManager: CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
         speedMetersPerSecond = location.speed
+        latestLocation = location
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
