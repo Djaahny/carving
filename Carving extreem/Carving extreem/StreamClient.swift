@@ -17,14 +17,6 @@ struct EdgeSample: Identifiable {
     let angle: Double
 }
 
-struct AccelSample: Identifiable {
-    let id = UUID()
-    let timestamp: Date
-    let x: Double
-    let y: Double
-    let z: Double
-}
-
 struct CalibratedAccel: Equatable {
     let x: Double
     let y: Double
@@ -134,8 +126,8 @@ final class StreamClient: NSObject, ObservableObject {
     @Published private(set) var lastKnownSensorName: String?
     @Published private(set) var latestSample: SensorSample?
     @Published private(set) var latestEdgeAngle: Double = 0
+    @Published private(set) var latestSignedEdgeAngle: Double = 0
     @Published private(set) var calibrationState: CalibrationState = .empty
-    @Published private(set) var accelSamples: [AccelSample] = []
     @Published private(set) var latestCalibratedAccel: CalibratedAccel = .zero
 
     private let deviceName = "Carving-Extreem"
@@ -147,13 +139,13 @@ final class StreamClient: NSObject, ObservableObject {
     private let gravity = 9.80665
     private let radiansToDegrees = 180.0 / Double.pi
     private let edgeAngleSmoothingAlpha = 0.18
-    private let accelWindowSeconds: TimeInterval = 5
     private let rotationEpsilon = 1e-6
 
     private var centralManager: CBCentralManager!
     private var peripheral: CBPeripheral?
     private var dataCharacteristic: CBCharacteristic?
     private var smoothedEdgeAngle: Double?
+    private var smoothedSignedEdgeAngle: Double?
 
     override init() {
         super.init()
@@ -285,32 +277,37 @@ final class StreamClient: NSObject, ObservableObject {
         )
         latestSample = sample
         updateCalibratedAccel(from: sample)
-        let rawEdgeAngle = computeEdgeAngle(from: sample)
+        let edgeAngles = computeEdgeAngles(from: sample)
+        let rawEdgeAngle = edgeAngles.magnitude
         if let smoothedEdgeAngle {
             self.smoothedEdgeAngle = smoothedEdgeAngle + edgeAngleSmoothingAlpha * (rawEdgeAngle - smoothedEdgeAngle)
         } else {
             smoothedEdgeAngle = rawEdgeAngle
         }
         latestEdgeAngle = smoothedEdgeAngle ?? rawEdgeAngle
+        let rawSignedEdgeAngle = edgeAngles.signed
+        if let smoothedSignedEdgeAngle {
+            self.smoothedSignedEdgeAngle = smoothedSignedEdgeAngle + edgeAngleSmoothingAlpha * (rawSignedEdgeAngle - smoothedSignedEdgeAngle)
+        } else {
+            smoothedSignedEdgeAngle = rawSignedEdgeAngle
+        }
+        latestSignedEdgeAngle = smoothedSignedEdgeAngle ?? rawSignedEdgeAngle
     }
 
-    private func computeEdgeAngle(from sample: SensorSample) -> Double {
-        guard calibrationState.isCalibrated else { return 0 }
+    private func computeEdgeAngles(from sample: SensorSample) -> (signed: Double, magnitude: Double) {
+        guard calibrationState.isCalibrated else { return (0, 0) }
         let pitchRoll = pitchRoll(from: sample)
         let sideAngle = axisAngle(for: calibrationState.sideAxis, pitchRoll: pitchRoll)
         let aligned = sideAngle - calibrationState.sideReference
-        let adjusted = abs(aligned)
-        return min(max(adjusted, 0), 90)
+        let signed = min(max(aligned, -90), 90)
+        let magnitude = min(max(abs(aligned), 0), 90)
+        return (signed, magnitude)
     }
 
     private func updateCalibratedAccel(from sample: SensorSample) {
         let leveled = leveledAccel(from: sample)
         let calibrated = CalibratedAccel(x: leveled.x, y: leveled.y, z: leveled.z)
         latestCalibratedAccel = calibrated
-        let timestamp = Date()
-        accelSamples.append(AccelSample(timestamp: timestamp, x: calibrated.x, y: calibrated.y, z: calibrated.z))
-        let cutoff = timestamp.addingTimeInterval(-accelWindowSeconds)
-        accelSamples.removeAll { $0.timestamp < cutoff }
     }
 
     private func saveCalibration(_ state: CalibrationState) {
