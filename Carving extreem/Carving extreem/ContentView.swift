@@ -966,7 +966,7 @@ private struct BootSceneView: UIViewRepresentable {
         let tiltNode = SCNNode()
         let bootNode = scene.rootNode.childNodes.first ?? SCNNode()
         bootNode.removeFromParentNode()
-        bootNode.eulerAngles = .zero
+        bootNode.eulerAngles = SCNVector3Zero
         normalizeBootNode(bootNode)
         tiltNode.addChildNode(bootNode)
         scene.rootNode.addChildNode(tiltNode)
