@@ -45,6 +45,12 @@ struct RunAnalysisView: View {
                 }
                 .frame(height: 220)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
+                .onAppear {
+                    updateMapPosition()
+                }
+                .onChange(of: run.locationTrack.count) { _, _ in
+                    updateMapPosition()
+                }
             }
         }
     }
@@ -101,6 +107,35 @@ struct RunAnalysisView: View {
             let progress = (sample.timestamp.timeIntervalSince(turn.startTime) / duration) * 100
             return TurnChartSample(progress: progress, edgeAngle: sample.edgeAngle)
         }
+    }
+
+    private func updateMapPosition() {
+        guard !trackCoordinates.isEmpty else { return }
+        if trackCoordinates.count == 1, let coordinate = trackCoordinates.first {
+            mapPosition = .region(
+                MKCoordinateRegion(
+                    center: coordinate,
+                    span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
+                )
+            )
+            return
+        }
+        let latitudes = trackCoordinates.map(\.latitude)
+        let longitudes = trackCoordinates.map(\.longitude)
+        guard let minLat = latitudes.min(),
+              let maxLat = latitudes.max(),
+              let minLon = longitudes.min(),
+              let maxLon = longitudes.max()
+        else { return }
+        let center = CLLocationCoordinate2D(
+            latitude: (minLat + maxLat) / 2,
+            longitude: (minLon + maxLon) / 2
+        )
+        let span = MKCoordinateSpan(
+            latitudeDelta: max((maxLat - minLat) * 1.4, 0.005),
+            longitudeDelta: max((maxLon - minLon) * 1.4, 0.005)
+        )
+        mapPosition = .region(MKCoordinateRegion(center: center, span: span))
     }
 }
 
