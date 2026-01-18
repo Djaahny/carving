@@ -7,6 +7,7 @@
 
 import Charts
 import CoreLocation
+import SceneKit
 import SwiftUI
 
 struct ContentView: View {
@@ -941,44 +942,58 @@ private struct Boot3DView: View {
     let angle: Double
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 20)
-                .fill(LinearGradient(
-                    colors: [Color.blue.opacity(0.15), Color.purple.opacity(0.1)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                ))
-                .padding(12)
+        BootSceneView(tiltAngle: angle)
+            .padding(.vertical, 8)
+    }
+}
 
-            ZStack {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(Color.gray.opacity(0.2))
-                    .frame(width: 90, height: 120)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.white.opacity(0.6), lineWidth: 1)
-                    )
-                    .offset(y: -10)
+private struct BootSceneView: UIViewRepresentable {
+    let tiltAngle: Double
 
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(Color.gray.opacity(0.35))
-                    .frame(width: 120, height: 60)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16)
-                            .stroke(Color.white.opacity(0.7), lineWidth: 1)
-                    )
-                    .offset(y: 40)
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
 
-                RoundedRectangle(cornerRadius: 14)
-                    .fill(Color.gray.opacity(0.45))
-                    .frame(width: 130, height: 24)
-                    .offset(y: 70)
-            }
-            .rotation3DEffect(.degrees(-12), axis: (x: 1, y: 0, z: 0))
-            .rotation3DEffect(.degrees(angle), axis: (x: 0, y: 0, z: 1))
-            .animation(.spring(response: 0.35, dampingFraction: 0.7), value: angle)
-        }
-        .padding(.vertical, 8)
+    func makeUIView(context: Context) -> SCNView {
+        let view = SCNView()
+        view.backgroundColor = .clear
+        view.allowsCameraControl = false
+        view.autoenablesDefaultLighting = true
+
+        let scene = SCNScene(named: "boot.usdz") ?? SCNScene()
+        view.scene = scene
+
+        let tiltNode = SCNNode()
+        let bootNode = scene.rootNode.childNodes.first ?? SCNNode()
+        bootNode.removeFromParentNode()
+        bootNode.eulerAngles = SCNVector3(-0.2, .pi, 0)
+        tiltNode.addChildNode(bootNode)
+        scene.rootNode.addChildNode(tiltNode)
+        context.coordinator.tiltNode = tiltNode
+
+        let cameraNode = SCNNode()
+        cameraNode.camera = SCNCamera()
+        cameraNode.position = SCNVector3(0, 0.2, 6)
+        cameraNode.look(at: SCNVector3(0, 0, 0))
+        scene.rootNode.addChildNode(cameraNode)
+
+        let lightNode = SCNNode()
+        lightNode.light = SCNLight()
+        lightNode.light?.type = .directional
+        lightNode.light?.intensity = 900
+        lightNode.eulerAngles = SCNVector3(-0.6, 0.4, 0)
+        scene.rootNode.addChildNode(lightNode)
+
+        return view
+    }
+
+    func updateUIView(_ uiView: SCNView, context: Context) {
+        let tiltRadians = Float(tiltAngle * .pi / 180)
+        context.coordinator.tiltNode?.eulerAngles.z = tiltRadians
+    }
+
+    final class Coordinator {
+        var tiltNode: SCNNode?
     }
 }
 
