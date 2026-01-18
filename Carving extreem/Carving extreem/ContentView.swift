@@ -11,6 +11,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var client = StreamClient()
     @StateObject private var session = RideSessionViewModel()
+    @StateObject private var locationManager = RideLocationManager()
     @State private var showCalibration = false
     @State private var didAutoConnect = false
     @State private var showCalibrationRequired = false
@@ -43,18 +44,19 @@ struct ContentView: View {
                 client.connect()
             }
         }
-        .onReceive(client.$latestEdgeAngle) { angle in
-            guard session.isRunning, client.latestSample != nil else { return }
-            session.ingest(edgeAngle: angle)
-        }
         .onChange(of: session.isRunning) { _, isRunning in
             showRunSession = isRunning
+            if isRunning {
+                locationManager.startUpdates()
+            } else {
+                locationManager.stopUpdates()
+            }
         }
         .sheet(isPresented: $showCalibration) {
             CalibrationFlowView(client: client)
         }
         .fullScreenCover(isPresented: $showRunSession) {
-            RunSessionView(session: session)
+            RunSessionView(session: session, client: client, locationManager: locationManager)
         }
         .alert("Calibration required", isPresented: $showCalibrationRequired) {
             Button("Start calibration") {
@@ -173,7 +175,16 @@ struct ContentView: View {
                 Text("Audio callouts")
                     .font(.subheadline.weight(.semibold))
                 Toggle("Time every 30 seconds", isOn: $session.timeCalloutsEnabled)
-                Toggle("Edge angle above 60°", isOn: $session.edgeCalloutsEnabled)
+                Toggle("Edge angle above \(Int(session.edgeCalloutThreshold))°", isOn: $session.edgeCalloutsEnabled)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Edge callout threshold")
+                        Spacer()
+                        Text("\(Int(session.edgeCalloutThreshold))°")
+                            .foregroundStyle(.secondary)
+                    }
+                    Slider(value: $session.edgeCalloutThreshold, in: 30...80, step: 1)
+                }
             }
             .font(.subheadline)
 
@@ -683,8 +694,9 @@ private struct CalibrationFlowView: View {
 
 private struct RunSessionView: View {
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var locationManager = RideLocationManager()
     let session: RideSessionViewModel
+    let client: StreamClient
+    @ObservedObject var locationManager: RideLocationManager
 
     var body: some View {
         NavigationStack {
@@ -744,29 +756,49 @@ private struct RunSessionView: View {
                 }
             }
         }
-        .onAppear {
-            locationManager.startUpdates()
-        }
-        .onDisappear {
-            locationManager.stopUpdates()
-        }
         .interactiveDismissDisabled()
+        .onReceive(client.$latestEdgeAngle) { angle in
+            guard session.isRunning, client.latestSample != nil else { return }
+            let speed = max(locationManager.speedMetersPerSecond, 0)
+            session.ingest(edgeAngle: angle, speedMetersPerSecond: speed)
+        }
     }
 
     private var runStats: some View {
         let speed = max(locationManager.speedMetersPerSecond, 0)
         let speedKmh = speed * 3.6
-        return VStack(alignment: .leading, spacing: 8) {
-            Text("Speed")
+        let peakAngle = session.edgeSamples.map(\.angle).max() ?? 0
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("Live stats")
                 .font(.subheadline.weight(.semibold))
-            Text(String(format: "%.1f km/h", speedKmh))
-                .font(.title3.weight(.semibold))
+            HStack(spacing: 16) {
+                statTile(title: "Current edge", value: "\(Int(session.latestEdgeAngle))°")
+                statTile(title: "Peak (10s)", value: "\(Int(peakAngle))°")
+            }
+            HStack(spacing: 16) {
+                statTile(title: "Speed", value: String(format: "%.1f km/h", speedKmh))
+                statTile(title: "Edge alert", value: "\(Int(session.edgeCalloutThreshold))°")
+            }
             if !locationManager.status.isEmpty {
                 Text(locationManager.status)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func statTile(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.headline.weight(.semibold))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     private func timeString(from interval: TimeInterval) -> String {
