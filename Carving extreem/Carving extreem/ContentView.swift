@@ -266,6 +266,21 @@ struct ContentView: View {
                         .font(.headline)
                 }
             }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Flat axis (X / Y / Z)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(
+                    String(
+                        format: "%.2f g / %.2f g / %.2f g",
+                        client.calibrationState.accelOffset[0],
+                        client.calibrationState.accelOffset[1],
+                        client.calibrationState.accelOffset[2]
+                    )
+                )
+                .font(.subheadline.weight(.medium))
+            }
         }
         .padding()
         .background(Color(.secondarySystemBackground))
@@ -304,9 +319,9 @@ private struct CalibrationFlowView: View {
             case .level:
                 return "Place the boot flat on the ground and keep it steady."
             case .forward:
-                return "Tip the boot forward onto the toe to capture the forward reference."
+                return "Tip the boot forward onto the toe. We'll lock in the forward axis automatically."
             case .side:
-                return "Tilt the boot toward the outside edge to capture the side reference."
+                return "Roll the boot side to side a couple of times to lock in the edge axis."
             case .complete:
                 return "You're ready to ride with calibrated references."
             }
@@ -315,7 +330,15 @@ private struct CalibrationFlowView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var step: Step = .level
+    @State private var forwardStabilityCount = 0
+    @State private var maxPositiveRoll: Double = 0
+    @State private var maxNegativeRoll: Double = 0
+    @State private var sawPositiveRoll = false
+    @State private var sawNegativeRoll = false
     let client: StreamClient
+    private let forwardThreshold = 18.0
+    private let sideThreshold = 12.0
+    private let stabilityTarget = 3
 
     var body: some View {
         NavigationStack {
@@ -328,10 +351,7 @@ private struct CalibrationFlowView: View {
 
                 Spacer()
 
-                Button(primaryButtonTitle) {
-                    handlePrimaryAction()
-                }
-                .buttonStyle(.borderedProminent)
+                calibrationActionView
             }
             .padding()
             .navigationTitle("Calibration")
@@ -344,14 +364,33 @@ private struct CalibrationFlowView: View {
                 }
             }
         }
+        .onReceive(client.$latestSample) { sample in
+            guard let sample else { return }
+            handleSample(sample)
+        }
     }
 
-    private var primaryButtonTitle: String {
-        switch step {
-        case .level: return "Capture Level"
-        case .forward: return "Capture Forward"
-        case .side: return "Capture Side"
-        case .complete: return "Done"
+    private var calibrationActionView: some View {
+        Group {
+            switch step {
+            case .level:
+                Button("Capture Level") {
+                    handlePrimaryAction()
+                }
+                .buttonStyle(.borderedProminent)
+            case .forward, .side:
+                HStack(spacing: 12) {
+                    ProgressView()
+                    Text("Listening for axis movement…")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            case .complete:
+                Button("Done") {
+                    handlePrimaryAction()
+                }
+                .buttonStyle(.borderedProminent)
+            }
         }
     }
 
@@ -359,16 +398,78 @@ private struct CalibrationFlowView: View {
         switch step {
         case .level:
             client.captureZeroCalibration()
+            resetSideTracking()
             step = .forward
         case .forward:
-            client.captureForwardReference()
-            step = .side
+            break
         case .side:
-            client.captureSideReference()
-            step = .complete
+            break
         case .complete:
             dismiss()
         }
+    }
+
+    private func handleSample(_ sample: SensorSample) {
+        switch step {
+        case .forward:
+            detectForwardReference(from: sample)
+        case .side:
+            detectSideReference(from: sample)
+        default:
+            break
+        }
+    }
+
+    private func detectForwardReference(from sample: SensorSample) {
+        let pitch = calibratedPitch(from: sample)
+        guard abs(pitch) > forwardThreshold else {
+            forwardStabilityCount = 0
+            return
+        }
+
+        forwardStabilityCount += 1
+        if forwardStabilityCount >= stabilityTarget {
+            client.captureForwardReference()
+            resetSideTracking()
+            step = .side
+        }
+    }
+
+    private func detectSideReference(from sample: SensorSample) {
+        let roll = calibratedRoll(from: sample)
+        if roll > sideThreshold {
+            sawPositiveRoll = true
+            maxPositiveRoll = max(maxPositiveRoll, roll)
+        } else if roll < -sideThreshold {
+            sawNegativeRoll = true
+            maxNegativeRoll = min(maxNegativeRoll, roll)
+        }
+
+        guard sawPositiveRoll, sawNegativeRoll else { return }
+        let midpoint = (maxPositiveRoll + maxNegativeRoll) / 2
+        client.captureSideReference(roll: midpoint)
+        step = .complete
+    }
+
+    private func calibratedPitch(from sample: SensorSample) -> Double {
+        let ax = sample.ax - client.calibrationState.accelOffset[0]
+        let ay = sample.ay - client.calibrationState.accelOffset[1]
+        let az = sample.az - client.calibrationState.accelOffset[2]
+        return atan2(-ax, sqrt(ay * ay + az * az)) * 180 / .pi
+    }
+
+    private func calibratedRoll(from sample: SensorSample) -> Double {
+        let ay = sample.ay - client.calibrationState.accelOffset[1]
+        let az = sample.az - client.calibrationState.accelOffset[2]
+        return atan2(ay, az) * 180 / .pi
+    }
+
+    private func resetSideTracking() {
+        forwardStabilityCount = 0
+        maxPositiveRoll = 0
+        maxNegativeRoll = 0
+        sawPositiveRoll = false
+        sawNegativeRoll = false
     }
 }
 
