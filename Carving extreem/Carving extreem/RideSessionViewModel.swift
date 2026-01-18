@@ -16,9 +16,16 @@ final class RideSessionViewModel: ObservableObject {
     private var lastEdgeCalloutTime: Date?
     private let speechSynthesizer = AVSpeechSynthesizer()
     private let edgeThreshold = 60.0
+    private let audioSession = AVAudioSession.sharedInstance()
 
-    func startRun() {
+    init() {
+        configureAudioSession()
+    }
+
+    func startRun(isCalibrated: Bool) {
+        guard isCalibrated else { return }
         guard !isRunning else { return }
+        configureAudioSession()
         isRunning = true
         startDate = Date()
         elapsed = 0
@@ -39,6 +46,7 @@ final class RideSessionViewModel: ObservableObject {
         isRunning = false
         timerCancellable?.cancel()
         timerCancellable = nil
+        deactivateAudioSession()
     }
 
     func ingest(edgeAngle: Double, at date: Date = Date()) {
@@ -73,6 +81,7 @@ final class RideSessionViewModel: ObservableObject {
     }
 
     private func speak(_ text: String) {
+        configureAudioSession()
         let utterance = AVSpeechUtterance(string: text)
         if let siriVoice = AVSpeechSynthesisVoice.speechVoices().first(where: { $0.name.contains("Siri") }) {
             utterance.voice = siriVoice
@@ -81,5 +90,14 @@ final class RideSessionViewModel: ObservableObject {
         }
         utterance.rate = 0.5
         speechSynthesizer.speak(utterance)
+    }
+
+    private func configureAudioSession() {
+        try? audioSession.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+        try? audioSession.setActive(true, options: [])
+    }
+
+    private func deactivateAudioSession() {
+        try? audioSession.setActive(false, options: [.notifyOthersOnDeactivation])
     }
 }

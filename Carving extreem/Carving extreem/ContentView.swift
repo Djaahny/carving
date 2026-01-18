@@ -13,12 +13,15 @@ struct ContentView: View {
     @StateObject private var session = RideSessionViewModel()
     @State private var showCalibration = false
     @State private var didAutoConnect = false
+    @State private var showCalibrationRequired = false
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
                     welcomeCard
+
+                    bootAngleCard
 
                     connectionCard
 
@@ -49,6 +52,14 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showCalibration) {
             CalibrationFlowView(client: client)
+        }
+        .alert("Calibration required", isPresented: $showCalibrationRequired) {
+            Button("Start calibration") {
+                showCalibration = true
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Complete the level, forward, and side calibration before starting a run.")
         }
     }
 
@@ -146,11 +157,16 @@ struct ContentView: View {
                 if session.isRunning {
                     session.stopRun()
                 } else {
-                    session.startRun()
+                    if client.calibrationState.isCalibrated {
+                        session.startRun(isCalibrated: true)
+                    } else {
+                        showCalibrationRequired = true
+                    }
                 }
             }
             .buttonStyle(.borderedProminent)
             .tint(session.isRunning ? .red : .blue)
+            .disabled(!session.isRunning && !client.calibrationState.isCalibrated)
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Audio callouts")
@@ -159,6 +175,12 @@ struct ContentView: View {
                 Toggle("Edge angle above 60°", isOn: $session.edgeCalloutsEnabled)
             }
             .font(.subheadline)
+
+            if !client.calibrationState.isCalibrated {
+                Label("Calibration required before starting a run.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.orange)
+            }
         }
         .padding()
         .background(Color(.secondarySystemBackground))
@@ -240,7 +262,7 @@ struct ContentView: View {
                     Text("Zeroed")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text(client.latestSample == nil ? "Waiting" : "Ready")
+                    Text(client.calibrationState.isCalibrated ? "Complete" : "Needed")
                         .font(.headline)
                 }
             }
@@ -347,5 +369,89 @@ private struct CalibrationFlowView: View {
         case .complete:
             dismiss()
         }
+    }
+}
+
+private struct BootAngleCard: View {
+    let angle: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Boot edge angle")
+                        .font(.headline)
+                    Text("Live side tilt")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text("\(Int(angle))°")
+                    .font(.headline.weight(.semibold))
+            }
+
+            Boot3DView(angle: angle)
+                .frame(height: 180)
+                .frame(maxWidth: .infinity)
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(Color(.systemBackground))
+                        .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 4)
+                )
+        }
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 20))
+    }
+}
+
+private struct Boot3DView: View {
+    let angle: Double
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 20)
+                .fill(LinearGradient(
+                    colors: [Color.blue.opacity(0.15), Color.purple.opacity(0.1)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                ))
+                .padding(12)
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.gray.opacity(0.2))
+                    .frame(width: 90, height: 120)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.white.opacity(0.6), lineWidth: 1)
+                    )
+                    .offset(y: -10)
+
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color.gray.opacity(0.35))
+                    .frame(width: 120, height: 60)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(Color.white.opacity(0.7), lineWidth: 1)
+                    )
+                    .offset(y: 40)
+
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(Color.gray.opacity(0.45))
+                    .frame(width: 130, height: 24)
+                    .offset(y: 70)
+            }
+            .rotation3DEffect(.degrees(-12), axis: (x: 1, y: 0, z: 0))
+            .rotation3DEffect(.degrees(angle), axis: (x: 0, y: 0, z: 1))
+            .animation(.spring(response: 0.35, dampingFraction: 0.7), value: angle)
+        }
+        .padding(.vertical, 8)
+    }
+}
+
+private extension ContentView {
+    var bootAngleCard: some View {
+        BootAngleCard(angle: client.latestEdgeAngle)
     }
 }

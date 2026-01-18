@@ -22,12 +22,14 @@ struct CalibrationState: Codable, Equatable {
     var gyroOffset: [Double]
     var forwardReference: Double
     var sideReference: Double
+    var isCalibrated: Bool
 
     static let empty = CalibrationState(
         accelOffset: [0, 0, 0],
         gyroOffset: [0, 0, 0],
         forwardReference: 0,
-        sideReference: 0
+        sideReference: 0,
+        isCalibrated: false
     )
 }
 
@@ -48,6 +50,8 @@ final class StreamClient: NSObject, ObservableObject {
     private let savedPeripheralKey = "lastPeripheralIdentifier"
     private let savedPeripheralNameKey = "lastPeripheralName"
     private let calibrationKey = "calibrationState"
+    private let gravity = 9.80665
+    private let radiansToDegrees = 180.0 / Double.pi
 
     private var centralManager: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -135,11 +139,28 @@ final class StreamClient: NSObject, ObservableObject {
     private func formattedMessage(from raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let parts = trimmed.split(separator: ",", omittingEmptySubsequences: true)
-        guard parts.count == 6 else {
+        guard parts.count == 6,
+              let ax = Double(parts[0]),
+              let ay = Double(parts[1]),
+              let az = Double(parts[2]),
+              let gx = Double(parts[3]),
+              let gy = Double(parts[4]),
+              let gz = Double(parts[5])
+        else {
             return trimmed
         }
 
-        return "a:\(parts[0]),\(parts[1]),\(parts[2]) g:\(parts[3]),\(parts[4]),\(parts[5])"
+        let accelInG = [ax, ay, az].map { $0 / gravity }
+        let gyroInDeg = [gx, gy, gz].map { $0 * radiansToDegrees }
+        return String(
+            format: "a:%.3f,%.3f,%.3f g:%.2f,%.2f,%.2f",
+            accelInG[0],
+            accelInG[1],
+            accelInG[2],
+            gyroInDeg[0],
+            gyroInDeg[1],
+            gyroInDeg[2]
+        )
     }
 
     private func updateSample(from raw: String) {
@@ -156,17 +177,29 @@ final class StreamClient: NSObject, ObservableObject {
             return
         }
 
-        let sample = SensorSample(ax: ax, ay: ay, az: az, gx: gx, gy: gy, gz: gz)
+        let sample = SensorSample(
+            ax: ax / gravity,
+            ay: ay / gravity,
+            az: az / gravity,
+            gx: gx * radiansToDegrees,
+            gy: gy * radiansToDegrees,
+            gz: gz * radiansToDegrees
+        )
         latestSample = sample
         latestEdgeAngle = computeEdgeAngle(from: sample)
     }
 
     private func computeEdgeAngle(from sample: SensorSample) -> Double {
+        guard calibrationState.isCalibrated else { return 0 }
         let ax = sample.ax - calibrationState.accelOffset[0]
         let ay = sample.ay - calibrationState.accelOffset[1]
         let az = sample.az - calibrationState.accelOffset[2]
         let roll = atan2(ay, az) * 180 / .pi
-        let adjusted = abs(roll - calibrationState.sideReference)
+        let pitch = atan2(-ax, sqrt(ay * ay + az * az)) * 180 / .pi
+        let alignedRoll = roll - calibrationState.sideReference
+        let alignedPitch = pitch - calibrationState.forwardReference
+        let correctedRoll = alignedRoll * cos(alignedPitch * .pi / 180)
+        let adjusted = abs(correctedRoll)
         return min(max(adjusted, 0), 90)
     }
 
@@ -190,6 +223,7 @@ final class StreamClient: NSObject, ObservableObject {
         var state = calibrationState
         state.accelOffset = [sample.ax, sample.ay, sample.az]
         state.gyroOffset = [sample.gx, sample.gy, sample.gz]
+        state.isCalibrated = false
         saveCalibration(state)
     }
 
@@ -201,6 +235,7 @@ final class StreamClient: NSObject, ObservableObject {
         let pitch = atan2(-ax, sqrt(ay * ay + az * az)) * 180 / .pi
         var state = calibrationState
         state.forwardReference = pitch
+        state.isCalibrated = false
         saveCalibration(state)
     }
 
@@ -211,6 +246,7 @@ final class StreamClient: NSObject, ObservableObject {
         let roll = atan2(ay, az) * 180 / .pi
         var state = calibrationState
         state.sideReference = roll
+        state.isCalibrated = true
         saveCalibration(state)
     }
 }
