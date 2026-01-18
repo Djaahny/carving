@@ -39,6 +39,7 @@ final class RideSessionViewModel: ObservableObject {
 
     private let turnSettings = TurnDetectorSettings()
     private var gravityEstimate: Vector3?
+    private var recordedEdgeSamples: [EdgeSample] = []
     private var isInTurn = false
     private var turnStartCandidate: Date?
     private var turnEndCandidate: Date?
@@ -62,6 +63,7 @@ final class RideSessionViewModel: ObservableObject {
         startDate = Date()
         elapsed = 0
         edgeSamples = []
+        recordedEdgeSamples = []
         turnWindows = []
         backgroundSamples = []
         locationTrack = []
@@ -111,7 +113,9 @@ final class RideSessionViewModel: ObservableObject {
         lastSampleTime = date
         latestEdgeAngle = edgeAngle
         latestSpeedMetersPerSecond = speedMetersPerSecond
-        edgeSamples.append(EdgeSample(timestamp: date, angle: edgeAngle))
+        let edgeSample = EdgeSample(timestamp: date, angle: edgeAngle)
+        edgeSamples.append(edgeSample)
+        recordedEdgeSamples.append(edgeSample)
         pruneSamples()
         handleEdgeCallout(angle: edgeAngle, speedMetersPerSecond: speedMetersPerSecond)
 
@@ -259,7 +263,8 @@ final class RideSessionViewModel: ObservableObject {
             name: name,
             turnWindows: turnWindows,
             backgroundSamples: backgroundSamples,
-            locationTrack: locationTrack
+            locationTrack: locationTrack,
+            edgeSamples: recordedEdgeSamples
         )
     }
 

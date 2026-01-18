@@ -245,6 +245,10 @@ struct RunAnalysisView: View {
             HStack(spacing: 12) {
                 summaryTile(title: "Length", value: formattedDistance(runDistanceMeters))
             }
+            HStack(spacing: 12) {
+                summaryTile(title: "Edge samples", value: formattedEdgeSampleCount)
+                summaryTile(title: "Resolution", value: formattedEdgeSampleResolution)
+            }
         }
         .padding()
         .background(Color(.secondarySystemBackground))
@@ -297,6 +301,29 @@ struct RunAnalysisView: View {
             total += currentLocation.distance(from: previousLocation)
         }
         return total
+    }
+
+    private var formattedEdgeSampleCount: String {
+        guard !run.edgeSamples.isEmpty else { return "—" }
+        return "\(run.edgeSamples.count)"
+    }
+
+    private var formattedEdgeSampleResolution: String {
+        let samples = run.edgeSamples
+        guard samples.count > 1 else { return "—" }
+        var intervals: [TimeInterval] = []
+        intervals.reserveCapacity(samples.count - 1)
+        for index in 1..<samples.count {
+            let delta = samples[index].timestamp.timeIntervalSince(samples[index - 1].timestamp)
+            if delta > 0 {
+                intervals.append(delta)
+            }
+        }
+        guard !intervals.isEmpty else { return "—" }
+        let averageInterval = intervals.reduce(0, +) / Double(intervals.count)
+        guard averageInterval > 0 else { return "—" }
+        let hz = 1 / averageInterval
+        return String(format: "%.1f Hz", hz)
     }
 
     private func formattedSpeed(_ speed: Double?) -> String {

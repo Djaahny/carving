@@ -11,7 +11,7 @@ struct SensorSample: Equatable {
     let gz: Double
 }
 
-struct EdgeSample: Identifiable {
+struct EdgeSample: Identifiable, Codable {
     let id = UUID()
     let timestamp: Date
     let angle: Double
