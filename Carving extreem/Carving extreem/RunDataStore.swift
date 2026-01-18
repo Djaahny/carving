@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 @MainActor
@@ -37,9 +38,7 @@ final class RunDataStore: ObservableObject {
 
     func runNumber(for date: Date) -> Int {
         let sameDayRuns = runs.filter { Calendar.current.isDate($0.date, inSameDayAs: date) }
-        return (sameDayRuns.map(
-            .runNumber
-        ).max() ?? 0) + 1
+        return (sameDayRuns.map { $0.runNumber }.max() ?? 0) + 1
     }
 
     private func runFiles() -> [URL] {
