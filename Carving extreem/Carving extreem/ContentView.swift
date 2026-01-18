@@ -281,9 +281,9 @@ private struct CalibrationFlowView: View {
             case .level:
                 return "Place the boot flat on the ground and keep it steady."
             case .forward:
-                return "Tip the boot forward onto the toe. We'll lock in the forward axis automatically."
+                return "Tip the boot forward onto the toe (up to 45°). Hold steady and we'll lock the forward axis."
             case .side:
-                return "Roll the boot side to side a couple of times to lock in the edge axis."
+                return "Rock the boot side to side up to 45° each way. Hold briefly on each edge."
             case .complete:
                 return "You're ready to ride with calibrated references."
             }
@@ -297,6 +297,11 @@ private struct CalibrationFlowView: View {
     @State private var maxNegativeRoll: Double = 0
     @State private var sawPositiveRoll = false
     @State private var sawNegativeRoll = false
+    @State private var latestPitch: Double = 0
+    @State private var latestRoll: Double = 0
+    @State private var forwardHoldProgress: Double = 0
+    @State private var sidePositiveProgress: Double = 0
+    @State private var sideNegativeProgress: Double = 0
     @State private var isLevelCalibrating = false
     @State private var levelProgress: Double = 0
     @State private var levelStart: Date?
@@ -360,17 +365,85 @@ private struct CalibrationFlowView: View {
                     .buttonStyle(.borderedProminent)
                 }
             case .forward, .side:
-                HStack(spacing: 12) {
-                    ProgressView()
-                    Text("Listening for axis movement…")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
+                calibrationLiveView
             case .complete:
                 Button("Done") {
                     handlePrimaryAction()
                 }
                 .buttonStyle(.borderedProminent)
+            }
+        }
+    }
+
+    private var calibrationLiveView: some View {
+        Group {
+            switch step {
+            case .forward:
+                VStack(alignment: .leading, spacing: 16) {
+                    BootPitchView(angle: latestPitch)
+                        .frame(height: 200)
+                        .frame(maxWidth: .infinity)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16)
+                                .fill(Color(.systemBackground))
+                                .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 4)
+                        )
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Toe-to-flat calibration")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Current: \(formattedAngle(latestPitch))° • Target: 20–45°")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        ProgressView(value: forwardHoldProgress)
+                        Text(forwardHoldProgress >= 1 ? "Forward reference captured." : "Hold steady for \(forwardHoldDuration, specifier: "%.1f")s")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            case .side:
+                VStack(alignment: .leading, spacing: 16) {
+                    Boot3DView(angle: latestRoll)
+                        .frame(height: 200)
+                        .frame(maxWidth: .infinity)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16)
+                                .fill(Color(.systemBackground))
+                                .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 4)
+                        )
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Side-to-side calibration")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Current: \(formattedAngle(latestRoll))° • Target: 20–45° each side")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("Outside edge")
+                                    .font(.footnote.weight(.medium))
+                                Spacer()
+                                Text(sawPositiveRoll ? "Captured" : "Hold \(sideHoldDuration, specifier: "%.1f")s")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            ProgressView(value: sawPositiveRoll ? 1 : sidePositiveProgress)
+
+                            HStack {
+                                Text("Inside edge")
+                                    .font(.footnote.weight(.medium))
+                                Spacer()
+                                Text(sawNegativeRoll ? "Captured" : "Hold \(sideHoldDuration, specifier: "%.1f")s")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            ProgressView(value: sawNegativeRoll ? 1 : sideNegativeProgress)
+                        }
+                    }
+                }
+            default:
+                EmptyView()
             }
         }
     }
@@ -389,23 +462,26 @@ private struct CalibrationFlowView: View {
     }
 
     private func handleSample(_ sample: SensorSample) {
+        let pitchRoll = client.pitchRoll(from: sample)
+        latestPitch = pitchRoll.pitch
+        latestRoll = pitchRoll.roll
         switch step {
         case .level:
             handleLevelSample(sample)
         case .forward:
-            detectForwardReference(from: sample)
+            detectForwardReference(pitch: latestPitch)
         case .side:
-            detectSideReference(from: sample)
+            detectSideReference(roll: latestRoll)
         default:
             break
         }
     }
 
-    private func detectForwardReference(from sample: SensorSample) {
-        let pitch = calibratedPitch(from: sample)
+    private func detectForwardReference(pitch: Double) {
         guard abs(pitch) > forwardThreshold else {
             forwardStabilityCount = 0
             forwardHoldStart = nil
+            forwardHoldProgress = 0
             return
         }
 
@@ -415,6 +491,7 @@ private struct CalibrationFlowView: View {
             forwardHoldStart = now
         }
         guard let holdStart = forwardHoldStart else { return }
+        forwardHoldProgress = min(max(now.timeIntervalSince(holdStart) / forwardHoldDuration, 0), 1)
         if forwardStabilityCount >= stabilityTarget, now.timeIntervalSince(holdStart) >= forwardHoldDuration {
             client.captureForwardReference()
             resetSideTracking()
@@ -422,8 +499,7 @@ private struct CalibrationFlowView: View {
         }
     }
 
-    private func detectSideReference(from sample: SensorSample) {
-        let roll = calibratedRoll(from: sample)
+    private func detectSideReference(roll: Double) {
         if roll > sideThreshold {
             maxPositiveRoll = max(maxPositiveRoll, roll)
             if sidePositiveHoldStart == nil {
@@ -432,6 +508,9 @@ private struct CalibrationFlowView: View {
             if let holdStart = sidePositiveHoldStart,
                Date().timeIntervalSince(holdStart) >= sideHoldDuration {
                 sawPositiveRoll = true
+            }
+            if let holdStart = sidePositiveHoldStart {
+                sidePositiveProgress = min(max(Date().timeIntervalSince(holdStart) / sideHoldDuration, 0), 1)
             }
         } else if roll < -sideThreshold {
             maxNegativeRoll = min(maxNegativeRoll, roll)
@@ -442,9 +521,18 @@ private struct CalibrationFlowView: View {
                Date().timeIntervalSince(holdStart) >= sideHoldDuration {
                 sawNegativeRoll = true
             }
+            if let holdStart = sideNegativeHoldStart {
+                sideNegativeProgress = min(max(Date().timeIntervalSince(holdStart) / sideHoldDuration, 0), 1)
+            }
         } else {
             sidePositiveHoldStart = nil
             sideNegativeHoldStart = nil
+            if !sawPositiveRoll {
+                sidePositiveProgress = 0
+            }
+            if !sawNegativeRoll {
+                sideNegativeProgress = 0
+            }
         }
 
         guard sawPositiveRoll, sawNegativeRoll else { return }
@@ -453,28 +541,18 @@ private struct CalibrationFlowView: View {
         step = .complete
     }
 
-    private func calibratedPitch(from sample: SensorSample) -> Double {
-        let ax = sample.ax - client.calibrationState.accelOffset[0]
-        let ay = sample.ay - client.calibrationState.accelOffset[1]
-        let az = sample.az - client.calibrationState.accelOffset[2]
-        return atan2(-ax, sqrt(ay * ay + az * az)) * 180 / .pi
-    }
-
-    private func calibratedRoll(from sample: SensorSample) -> Double {
-        let ay = sample.ay - client.calibrationState.accelOffset[1]
-        let az = sample.az - client.calibrationState.accelOffset[2]
-        return atan2(ay, az) * 180 / .pi
-    }
-
     private func resetSideTracking() {
         forwardStabilityCount = 0
         forwardHoldStart = nil
+        forwardHoldProgress = 0
         maxPositiveRoll = 0
         maxNegativeRoll = 0
         sawPositiveRoll = false
         sawNegativeRoll = false
         sidePositiveHoldStart = nil
         sideNegativeHoldStart = nil
+        sidePositiveProgress = 0
+        sideNegativeProgress = 0
     }
 
     private func startLevelCalibration() {
@@ -482,6 +560,10 @@ private struct CalibrationFlowView: View {
         levelProgress = 0
         levelSamples = []
         levelStart = Date()
+    }
+
+    private func formattedAngle(_ angle: Double) -> String {
+        String(format: "%.1f", angle)
     }
 
     private func handleLevelSample(_ sample: SensorSample) {
@@ -692,6 +774,51 @@ private struct Boot3DView: View {
             }
             .rotation3DEffect(.degrees(-12), axis: (x: 1, y: 0, z: 0))
             .rotation3DEffect(.degrees(angle), axis: (x: 0, y: 0, z: 1))
+            .animation(.spring(response: 0.35, dampingFraction: 0.7), value: angle)
+        }
+        .padding(.vertical, 8)
+    }
+}
+
+private struct BootPitchView: View {
+    let angle: Double
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 20)
+                .fill(LinearGradient(
+                    colors: [Color.blue.opacity(0.15), Color.purple.opacity(0.1)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                ))
+                .padding(12)
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.gray.opacity(0.2))
+                    .frame(width: 120, height: 80)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.white.opacity(0.6), lineWidth: 1)
+                    )
+                    .offset(y: -10)
+
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color.gray.opacity(0.35))
+                    .frame(width: 140, height: 50)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(Color.white.opacity(0.7), lineWidth: 1)
+                    )
+                    .offset(y: 30)
+
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(Color.gray.opacity(0.45))
+                    .frame(width: 150, height: 20)
+                    .offset(y: 55)
+            }
+            .rotation3DEffect(.degrees(12), axis: (x: 0, y: 1, z: 0))
+            .rotation3DEffect(.degrees(-angle), axis: (x: 1, y: 0, z: 0))
             .animation(.spring(response: 0.35, dampingFraction: 0.7), value: angle)
         }
         .padding(.vertical, 8)
