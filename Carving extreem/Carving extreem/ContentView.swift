@@ -49,7 +49,6 @@ struct ContentView: View {
             }
         }
         .onChange(of: session.isRunning) { _, isRunning in
-            showRunSession = isRunning
             if isRunning {
                 locationManager.startUpdates()
             } else {
@@ -810,11 +809,11 @@ private struct RunSessionView: View {
             }
         }
         .interactiveDismissDisabled(session.isRunning)
-        .onReceive(client.$latestEdgeAngle) { angle in
-            guard session.isRunning, let sample = client.latestSample else { return }
-            let speed = max(locationManager.speedMetersPerSecond, 0)
-            let location = locationManager.latestLocation.map { location in
-                LocationSample(
+            .onReceive(client.$latestEdgeAngle) { angle in
+                guard session.isRunning, let sample = client.latestSample else { return }
+                let speed = max(locationManager.speedMetersPerSecond, 0)
+                let location = locationManager.latestLocation.map { location in
+                    LocationSample(
                     timestamp: location.timestamp,
                     latitude: location.coordinate.latitude,
                     longitude: location.coordinate.longitude,
@@ -823,13 +822,25 @@ private struct RunSessionView: View {
                     horizontalAccuracy: location.horizontalAccuracy
                 )
             }
-            session.ingest(
-                sample: sample,
-                edgeAngle: angle,
-                speedMetersPerSecond: speed,
-                location: location
-            )
-        }
+                session.ingest(
+                    sample: sample,
+                    edgeAngle: angle,
+                    speedMetersPerSecond: speed,
+                    location: location
+                )
+            }
+            .onReceive(locationManager.$latestLocation) { location in
+                guard session.isRunning, let location else { return }
+                let locationSample = LocationSample(
+                    timestamp: location.timestamp,
+                    latitude: location.coordinate.latitude,
+                    longitude: location.coordinate.longitude,
+                    altitude: location.altitude,
+                    speed: location.speed,
+                    horizontalAccuracy: location.horizontalAccuracy
+                )
+                session.ingestLocation(locationSample)
+            }
         .alert("Save failed", isPresented: Binding(get: { saveError != nil }, set: { _ in saveError = nil })) {
             Button("OK", role: .cancel) {}
         } message: {
