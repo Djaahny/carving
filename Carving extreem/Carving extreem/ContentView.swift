@@ -47,7 +47,7 @@ struct ContentView: View {
             guard client.latestSample != nil else { return }
             session.ingest(edgeAngle: angle)
         }
-        .onChange(of: session.isRunning) { isRunning in
+        .onChange(of: session.isRunning) { _, isRunning in
             showRunSession = isRunning
         }
         .sheet(isPresented: $showCalibration) {
@@ -621,9 +621,13 @@ private struct CalibrationFlowView: View {
             return "Return to flat to confirm."
         }
         if forwardCaptureCount == 1 {
-            return forwardHoldProgress >= 1 ? "Forward reference confirmed." : "Hold steady again for \(forwardHoldDuration, specifier: "%.1f")s"
+            return forwardHoldProgress >= 1 ? "Forward reference confirmed." : "Hold steady again for \(forwardHoldDurationText)s"
         }
-        return forwardHoldProgress >= 1 ? "Forward reference captured." : "Hold steady for \(forwardHoldDuration, specifier: "%.1f")s"
+        return forwardHoldProgress >= 1 ? "Forward reference captured." : "Hold steady for \(forwardHoldDurationText)s"
+    }
+
+    private var forwardHoldDurationText: String {
+        String(format: "%.1f", forwardHoldDuration)
     }
 
     private func selectedForwardAxis(pitch: Double, roll: Double) -> Axis? {
