@@ -2,16 +2,52 @@ import Combine
 import CoreBluetooth
 import Foundation
 
+struct SensorSample: Equatable {
+    let ax: Double
+    let ay: Double
+    let az: Double
+    let gx: Double
+    let gy: Double
+    let gz: Double
+}
+
+struct EdgeSample: Identifiable {
+    let id = UUID()
+    let timestamp: Date
+    let angle: Double
+}
+
+struct CalibrationState: Codable, Equatable {
+    var accelOffset: [Double]
+    var gyroOffset: [Double]
+    var forwardReference: Double
+    var sideReference: Double
+
+    static let empty = CalibrationState(
+        accelOffset: [0, 0, 0],
+        gyroOffset: [0, 0, 0],
+        forwardReference: 0,
+        sideReference: 0
+    )
+}
+
 @MainActor
 final class StreamClient: NSObject, ObservableObject {
     @Published private(set) var messages: [String] = []
     @Published private(set) var isConnected = false
     @Published private(set) var isScanning = false
     @Published private(set) var status = "Bluetooth not ready"
+    @Published private(set) var lastKnownSensorName: String?
+    @Published private(set) var latestSample: SensorSample?
+    @Published private(set) var latestEdgeAngle: Double = 0
+    @Published private(set) var calibrationState: CalibrationState = .empty
 
     private let deviceName = "Carving-Extreem"
     private let serviceUUID = CBUUID(string: "7a3f0001-3c12-4b50-8d32-9f8c8a3d8f31")
     private let dataCharacteristicUUID = CBUUID(string: "7a3f0002-3c12-4b50-8d32-9f8c8a3d8f31")
+    private let savedPeripheralKey = "lastPeripheralIdentifier"
+    private let savedPeripheralNameKey = "lastPeripheralName"
+    private let calibrationKey = "calibrationState"
 
     private var centralManager: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -19,6 +55,8 @@ final class StreamClient: NSObject, ObservableObject {
 
     override init() {
         super.init()
+        calibrationState = loadCalibration()
+        lastKnownSensorName = UserDefaults.standard.string(forKey: savedPeripheralNameKey)
         centralManager = CBCentralManager(delegate: self, queue: nil)
     }
 
@@ -29,6 +67,14 @@ final class StreamClient: NSObject, ObservableObject {
         }
 
         if isScanning {
+            return
+        }
+
+        if let cachedPeripheral = retrieveCachedPeripheral() {
+            status = "Connecting to \(cachedPeripheral.name ?? deviceName)…"
+            peripheral = cachedPeripheral
+            cachedPeripheral.delegate = self
+            centralManager.connect(cachedPeripheral, options: nil)
             return
         }
 
@@ -59,6 +105,25 @@ final class StreamClient: NSObject, ObservableObject {
         dataCharacteristic = nil
     }
 
+    private func retrieveCachedPeripheral() -> CBPeripheral? {
+        guard let uuidString = UserDefaults.standard.string(forKey: savedPeripheralKey),
+              let uuid = UUID(uuidString: uuidString)
+        else {
+            return nil
+        }
+
+        let peripherals = centralManager.retrievePeripherals(withIdentifiers: [uuid])
+        return peripherals.first
+    }
+
+    private func saveLastPeripheral(_ peripheral: CBPeripheral) {
+        UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: savedPeripheralKey)
+        if let name = peripheral.name {
+            UserDefaults.standard.set(name, forKey: savedPeripheralNameKey)
+            lastKnownSensorName = name
+        }
+    }
+
     private func appendMessage(_ message: String) {
         messages.append(message)
         let maxMessages = 200
@@ -75,6 +140,78 @@ final class StreamClient: NSObject, ObservableObject {
         }
 
         return "a:\(parts[0]),\(parts[1]),\(parts[2]) g:\(parts[3]),\(parts[4]),\(parts[5])"
+    }
+
+    private func updateSample(from raw: String) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = trimmed.split(separator: ",", omittingEmptySubsequences: true)
+        guard parts.count == 6,
+              let ax = Double(parts[0]),
+              let ay = Double(parts[1]),
+              let az = Double(parts[2]),
+              let gx = Double(parts[3]),
+              let gy = Double(parts[4]),
+              let gz = Double(parts[5])
+        else {
+            return
+        }
+
+        let sample = SensorSample(ax: ax, ay: ay, az: az, gx: gx, gy: gy, gz: gz)
+        latestSample = sample
+        latestEdgeAngle = computeEdgeAngle(from: sample)
+    }
+
+    private func computeEdgeAngle(from sample: SensorSample) -> Double {
+        let ax = sample.ax - calibrationState.accelOffset[0]
+        let ay = sample.ay - calibrationState.accelOffset[1]
+        let az = sample.az - calibrationState.accelOffset[2]
+        let roll = atan2(ay, az) * 180 / .pi
+        let adjusted = abs(roll - calibrationState.sideReference)
+        return min(max(adjusted, 0), 90)
+    }
+
+    private func saveCalibration(_ state: CalibrationState) {
+        guard let data = try? JSONEncoder().encode(state) else { return }
+        UserDefaults.standard.set(data, forKey: calibrationKey)
+        calibrationState = state
+    }
+
+    private func loadCalibration() -> CalibrationState {
+        guard let data = UserDefaults.standard.data(forKey: calibrationKey),
+              let state = try? JSONDecoder().decode(CalibrationState.self, from: data)
+        else {
+            return .empty
+        }
+        return state
+    }
+
+    func captureZeroCalibration() {
+        guard let sample = latestSample else { return }
+        var state = calibrationState
+        state.accelOffset = [sample.ax, sample.ay, sample.az]
+        state.gyroOffset = [sample.gx, sample.gy, sample.gz]
+        saveCalibration(state)
+    }
+
+    func captureForwardReference() {
+        guard let sample = latestSample else { return }
+        let ax = sample.ax - calibrationState.accelOffset[0]
+        let ay = sample.ay - calibrationState.accelOffset[1]
+        let az = sample.az - calibrationState.accelOffset[2]
+        let pitch = atan2(-ax, sqrt(ay * ay + az * az)) * 180 / .pi
+        var state = calibrationState
+        state.forwardReference = pitch
+        saveCalibration(state)
+    }
+
+    func captureSideReference() {
+        guard let sample = latestSample else { return }
+        let ay = sample.ay - calibrationState.accelOffset[1]
+        let az = sample.az - calibrationState.accelOffset[2]
+        let roll = atan2(ay, az) * 180 / .pi
+        var state = calibrationState
+        state.sideReference = roll
+        saveCalibration(state)
     }
 }
 
@@ -119,6 +256,7 @@ extension StreamClient: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         status = "Discovering services…"
         isConnected = true
+        saveLastPeripheral(peripheral)
         peripheral.discoverServices([serviceUUID])
     }
 
@@ -210,5 +348,6 @@ extension StreamClient: CBPeripheralDelegate {
         let raw = String(decoding: data, as: UTF8.self)
         let formatted = formattedMessage(from: raw)
         appendMessage(formatted)
+        updateSample(from: raw)
     }
 }
