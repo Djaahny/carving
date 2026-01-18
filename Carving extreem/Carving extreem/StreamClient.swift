@@ -49,6 +49,34 @@ struct CalibrationState: Codable, Equatable {
     )
 }
 
+private struct Vector3 {
+    var x: Double
+    var y: Double
+    var z: Double
+
+    var length: Double {
+        sqrt(x * x + y * y + z * z)
+    }
+
+    var normalized: Vector3 {
+        let len = length
+        guard len > 0 else { return self }
+        return Vector3(x: x / len, y: y / len, z: z / len)
+    }
+
+    static func dot(_ lhs: Vector3, _ rhs: Vector3) -> Double {
+        lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z
+    }
+
+    static func cross(_ lhs: Vector3, _ rhs: Vector3) -> Vector3 {
+        Vector3(
+            x: lhs.y * rhs.z - lhs.z * rhs.y,
+            y: lhs.z * rhs.x - lhs.x * rhs.z,
+            z: lhs.x * rhs.y - lhs.y * rhs.x
+        )
+    }
+}
+
 @MainActor
 final class StreamClient: NSObject, ObservableObject {
     @Published private(set) var messages: [String] = []
@@ -72,6 +100,7 @@ final class StreamClient: NSObject, ObservableObject {
     private let radiansToDegrees = 180.0 / Double.pi
     private let edgeAngleSmoothingAlpha = 0.18
     private let accelWindowSeconds: TimeInterval = 5
+    private let rotationEpsilon = 1e-6
 
     private var centralManager: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -219,24 +248,15 @@ final class StreamClient: NSObject, ObservableObject {
 
     private func computeEdgeAngle(from sample: SensorSample) -> Double {
         guard calibrationState.isCalibrated else { return 0 }
-        let ax = sample.ax - calibrationState.accelOffset[0]
-        let ay = sample.ay - calibrationState.accelOffset[1]
-        let az = sample.az - calibrationState.accelOffset[2]
-        let roll = atan2(ay, az) * 180 / .pi
-        let pitch = atan2(-ax, sqrt(ay * ay + az * az)) * 180 / .pi
-        let alignedRoll = roll - calibrationState.sideReference
-        let alignedPitch = pitch - calibrationState.forwardReference
-        let correctedRoll = alignedRoll * cos(alignedPitch * .pi / 180)
-        let adjusted = abs(correctedRoll)
+        let pitchRoll = pitchRoll(from: sample)
+        let alignedRoll = pitchRoll.roll - calibrationState.sideReference
+        let adjusted = abs(alignedRoll)
         return min(max(adjusted, 0), 90)
     }
 
     private func updateCalibratedAccel(from sample: SensorSample) {
-        let calibrated = CalibratedAccel(
-            x: sample.ax - calibrationState.accelOffset[0],
-            y: sample.ay - calibrationState.accelOffset[1],
-            z: sample.az - calibrationState.accelOffset[2]
-        )
+        let leveled = leveledAccel(from: sample)
+        let calibrated = CalibratedAccel(x: leveled.x, y: leveled.y, z: leveled.z)
         latestCalibratedAccel = calibrated
         let timestamp = Date()
         accelSamples.append(AccelSample(timestamp: timestamp, x: calibrated.x, y: calibrated.y, z: calibrated.z))
@@ -294,10 +314,7 @@ final class StreamClient: NSObject, ObservableObject {
 
     func captureForwardReference() {
         guard let sample = latestSample else { return }
-        let ax = sample.ax - calibrationState.accelOffset[0]
-        let ay = sample.ay - calibrationState.accelOffset[1]
-        let az = sample.az - calibrationState.accelOffset[2]
-        let pitch = atan2(-ax, sqrt(ay * ay + az * az)) * 180 / .pi
+        let pitch = pitchRoll(from: sample).pitch
         var state = calibrationState
         state.forwardReference = pitch
         state.isCalibrated = false
@@ -306,9 +323,7 @@ final class StreamClient: NSObject, ObservableObject {
 
     func captureSideReference() {
         guard let sample = latestSample else { return }
-        let ay = sample.ay - calibrationState.accelOffset[1]
-        let az = sample.az - calibrationState.accelOffset[2]
-        let roll = atan2(ay, az) * 180 / .pi
+        let roll = pitchRoll(from: sample).roll
         var state = calibrationState
         state.sideReference = roll
         state.isCalibrated = true
@@ -320,6 +335,71 @@ final class StreamClient: NSObject, ObservableObject {
         state.sideReference = roll
         state.isCalibrated = true
         saveCalibration(state)
+    }
+
+    func pitchRoll(from sample: SensorSample) -> (pitch: Double, roll: Double) {
+        let leveled = leveledAccel(from: sample)
+        let roll = atan2(leveled.y, leveled.z) * 180 / .pi
+        let pitch = atan2(-leveled.x, sqrt(leveled.y * leveled.y + leveled.z * leveled.z)) * 180 / .pi
+        return (pitch, roll)
+    }
+
+    private func leveledAccel(from sample: SensorSample) -> Vector3 {
+        let raw = Vector3(x: sample.ax, y: sample.ay, z: sample.az)
+        let flat = Vector3(
+            x: calibrationState.accelOffset[0],
+            y: calibrationState.accelOffset[1],
+            z: calibrationState.accelOffset[2]
+        )
+        return rotateVector(raw, aligning: flat)
+    }
+
+    private func rotateVector(_ vector: Vector3, aligning flatReference: Vector3) -> Vector3 {
+        let flatLength = flatReference.length
+        guard flatLength > rotationEpsilon else {
+            return vector
+        }
+        let from = flatReference.normalized
+        let to = Vector3(x: 0, y: 0, z: 1)
+        let dotValue = max(min(Vector3.dot(from, to), 1), -1)
+        let angle = acos(dotValue)
+        if angle < rotationEpsilon {
+            return vector
+        }
+        let axis = Vector3.cross(from, to)
+        let axisLength = axis.length
+        guard axisLength > rotationEpsilon else {
+            return Vector3(x: -vector.x, y: -vector.y, z: -vector.z)
+        }
+        let normalizedAxis = axis.normalized
+        return rotate(vector, axis: normalizedAxis, angle: angle)
+    }
+
+    private func rotate(_ vector: Vector3, axis: Vector3, angle: Double) -> Vector3 {
+        let cosAngle = cos(angle)
+        let sinAngle = sin(angle)
+        let term1 = Vector3(
+            x: vector.x * cosAngle,
+            y: vector.y * cosAngle,
+            z: vector.z * cosAngle
+        )
+        let cross = Vector3.cross(axis, vector)
+        let term2 = Vector3(
+            x: cross.x * sinAngle,
+            y: cross.y * sinAngle,
+            z: cross.z * sinAngle
+        )
+        let dot = Vector3.dot(axis, vector)
+        let term3 = Vector3(
+            x: axis.x * dot * (1 - cosAngle),
+            y: axis.y * dot * (1 - cosAngle),
+            z: axis.z * dot * (1 - cosAngle)
+        )
+        return Vector3(
+            x: term1.x + term2.x + term3.x,
+            y: term1.y + term2.y + term3.y,
+            z: term1.z + term2.z + term3.z
+        )
     }
 }
 
