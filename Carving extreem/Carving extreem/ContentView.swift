@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var showCalibration = false
     @State private var didAutoConnect = false
     @State private var showCalibrationRequired = false
+    @State private var showRunSession = false
 
     var body: some View {
         NavigationStack {
@@ -26,10 +27,6 @@ struct ContentView: View {
                     connectionCard
 
                     runControlCard
-
-                    if session.isRunning {
-                        edgeChartCard
-                    }
 
                     calibrationCard
                 }
@@ -50,8 +47,14 @@ struct ContentView: View {
             guard client.latestSample != nil else { return }
             session.ingest(edgeAngle: angle)
         }
+        .onChange(of: session.isRunning) { isRunning in
+            showRunSession = isRunning
+        }
         .sheet(isPresented: $showCalibration) {
             CalibrationFlowView(client: client)
+        }
+        .fullScreenCover(isPresented: $showRunSession) {
+            RunSessionView(session: session)
         }
         .alert("Calibration required", isPresented: $showCalibrationRequired) {
             Button("Start calibration") {
@@ -153,20 +156,18 @@ struct ContentView: View {
                     .font(.headline.weight(.semibold))
             }
 
-            Button(session.isRunning ? "Stop Run" : "Start Run") {
-                if session.isRunning {
-                    session.stopRun()
+            Button(session.isRunning ? "Running" : "Start Run") {
+                guard !session.isRunning else { return }
+                if client.calibrationState.isCalibrated {
+                    session.startRun(isCalibrated: true)
+                    showRunSession = true
                 } else {
-                    if client.calibrationState.isCalibrated {
-                        session.startRun(isCalibrated: true)
-                    } else {
-                        showCalibrationRequired = true
-                    }
+                    showCalibrationRequired = true
                 }
             }
             .buttonStyle(.borderedProminent)
-            .tint(session.isRunning ? .red : .blue)
-            .disabled(!session.isRunning && !client.calibrationState.isCalibrated)
+            .tint(session.isRunning ? .gray : .blue)
+            .disabled(session.isRunning || !client.calibrationState.isCalibrated)
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Audio callouts")
@@ -181,45 +182,6 @@ struct ContentView: View {
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(.orange)
             }
-        }
-        .padding()
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 20))
-    }
-
-    private var edgeChartCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Edge angle")
-                        .font(.headline)
-                    Text("Rolling 10-second view")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text("\(Int(client.latestEdgeAngle))°")
-                    .font(.headline.weight(.semibold))
-            }
-
-            Chart(session.edgeSamples) { sample in
-                LineMark(
-                    x: .value("Time", sample.timestamp),
-                    y: .value("Angle", sample.angle)
-                )
-                .interpolationMethod(.catmullRom)
-                AreaMark(
-                    x: .value("Time", sample.timestamp),
-                    y: .value("Angle", sample.angle)
-                )
-                .foregroundStyle(.linearGradient(
-                    colors: [Color.blue.opacity(0.4), Color.blue.opacity(0.05)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                ))
-            }
-            .chartYScale(domain: 0...90)
-            .frame(height: 200)
         }
         .padding()
         .background(Color(.secondarySystemBackground))
@@ -335,10 +297,20 @@ private struct CalibrationFlowView: View {
     @State private var maxNegativeRoll: Double = 0
     @State private var sawPositiveRoll = false
     @State private var sawNegativeRoll = false
+    @State private var isLevelCalibrating = false
+    @State private var levelProgress: Double = 0
+    @State private var levelStart: Date?
+    @State private var levelSamples: [SensorSample] = []
+    @State private var forwardHoldStart: Date?
+    @State private var sidePositiveHoldStart: Date?
+    @State private var sideNegativeHoldStart: Date?
     let client: StreamClient
     private let forwardThreshold = 18.0
     private let sideThreshold = 12.0
-    private let stabilityTarget = 3
+    private let stabilityTarget = 6
+    private let levelDuration: TimeInterval = 5
+    private let forwardHoldDuration: TimeInterval = 1.5
+    private let sideHoldDuration: TimeInterval = 1.0
 
     var body: some View {
         NavigationStack {
@@ -374,10 +346,19 @@ private struct CalibrationFlowView: View {
         Group {
             switch step {
             case .level:
-                Button("Capture Level") {
-                    handlePrimaryAction()
+                if isLevelCalibrating {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ProgressView(value: levelProgress)
+                        Text("Averaging level position… \(Int(levelProgress * 100))%")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Button("Start 5s level capture") {
+                        handlePrimaryAction()
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
-                .buttonStyle(.borderedProminent)
             case .forward, .side:
                 HStack(spacing: 12) {
                     ProgressView()
@@ -397,9 +378,7 @@ private struct CalibrationFlowView: View {
     private func handlePrimaryAction() {
         switch step {
         case .level:
-            client.captureZeroCalibration()
-            resetSideTracking()
-            step = .forward
+            startLevelCalibration()
         case .forward:
             break
         case .side:
@@ -411,6 +390,8 @@ private struct CalibrationFlowView: View {
 
     private func handleSample(_ sample: SensorSample) {
         switch step {
+        case .level:
+            handleLevelSample(sample)
         case .forward:
             detectForwardReference(from: sample)
         case .side:
@@ -424,11 +405,17 @@ private struct CalibrationFlowView: View {
         let pitch = calibratedPitch(from: sample)
         guard abs(pitch) > forwardThreshold else {
             forwardStabilityCount = 0
+            forwardHoldStart = nil
             return
         }
 
         forwardStabilityCount += 1
-        if forwardStabilityCount >= stabilityTarget {
+        let now = Date()
+        if forwardHoldStart == nil {
+            forwardHoldStart = now
+        }
+        guard let holdStart = forwardHoldStart else { return }
+        if forwardStabilityCount >= stabilityTarget, now.timeIntervalSince(holdStart) >= forwardHoldDuration {
             client.captureForwardReference()
             resetSideTracking()
             step = .side
@@ -438,11 +425,26 @@ private struct CalibrationFlowView: View {
     private func detectSideReference(from sample: SensorSample) {
         let roll = calibratedRoll(from: sample)
         if roll > sideThreshold {
-            sawPositiveRoll = true
             maxPositiveRoll = max(maxPositiveRoll, roll)
+            if sidePositiveHoldStart == nil {
+                sidePositiveHoldStart = Date()
+            }
+            if let holdStart = sidePositiveHoldStart,
+               Date().timeIntervalSince(holdStart) >= sideHoldDuration {
+                sawPositiveRoll = true
+            }
         } else if roll < -sideThreshold {
-            sawNegativeRoll = true
             maxNegativeRoll = min(maxNegativeRoll, roll)
+            if sideNegativeHoldStart == nil {
+                sideNegativeHoldStart = Date()
+            }
+            if let holdStart = sideNegativeHoldStart,
+               Date().timeIntervalSince(holdStart) >= sideHoldDuration {
+                sawNegativeRoll = true
+            }
+        } else {
+            sidePositiveHoldStart = nil
+            sideNegativeHoldStart = nil
         }
 
         guard sawPositiveRoll, sawNegativeRoll else { return }
@@ -466,15 +468,133 @@ private struct CalibrationFlowView: View {
 
     private func resetSideTracking() {
         forwardStabilityCount = 0
+        forwardHoldStart = nil
         maxPositiveRoll = 0
         maxNegativeRoll = 0
         sawPositiveRoll = false
         sawNegativeRoll = false
+        sidePositiveHoldStart = nil
+        sideNegativeHoldStart = nil
+    }
+
+    private func startLevelCalibration() {
+        isLevelCalibrating = true
+        levelProgress = 0
+        levelSamples = []
+        levelStart = Date()
+    }
+
+    private func handleLevelSample(_ sample: SensorSample) {
+        guard isLevelCalibrating, let start = levelStart else { return }
+        levelSamples.append(sample)
+        let elapsed = Date().timeIntervalSince(start)
+        levelProgress = min(max(elapsed / levelDuration, 0), 1)
+        guard elapsed >= levelDuration else { return }
+        client.captureZeroCalibration(samples: levelSamples)
+        isLevelCalibrating = false
+        resetSideTracking()
+        step = .forward
+    }
+}
+
+private struct RunSessionView: View {
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var locationManager = RideLocationManager()
+    let session: RideSessionViewModel
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 20) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Run mode")
+                                .font(.title2.bold())
+                            Text("Edge angle (accelerometer-based)")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text(timeString(from: session.elapsed))
+                            .font(.headline.weight(.semibold))
+                    }
+
+                    Chart(session.edgeSamples) { sample in
+                        LineMark(
+                            x: .value("Time", sample.timestamp),
+                            y: .value("Angle", sample.angle)
+                        )
+                        .interpolationMethod(.catmullRom)
+                        AreaMark(
+                            x: .value("Time", sample.timestamp),
+                            y: .value("Angle", sample.angle)
+                        )
+                        .foregroundStyle(.linearGradient(
+                            colors: [Color.blue.opacity(0.4), Color.blue.opacity(0.05)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ))
+                    }
+                    .chartYScale(domain: 0...90)
+                    .frame(height: 220)
+
+                    runStats
+                }
+                .padding()
+                .background(Color(.secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+
+                Spacer()
+            }
+            .padding()
+            .navigationTitle("Run")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Stop") {
+                        session.stopRun()
+                        dismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                }
+            }
+        }
+        .onAppear {
+            locationManager.startUpdates()
+        }
+        .onDisappear {
+            locationManager.stopUpdates()
+        }
+        .interactiveDismissDisabled()
+    }
+
+    private var runStats: some View {
+        let speed = max(locationManager.speedMetersPerSecond, 0)
+        let speedKmh = speed * 3.6
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Speed")
+                .font(.subheadline.weight(.semibold))
+            Text(String(format: "%.1f km/h", speedKmh))
+                .font(.title3.weight(.semibold))
+            if !locationManager.status.isEmpty {
+                Text(locationManager.status)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func timeString(from interval: TimeInterval) -> String {
+        let minutes = Int(interval) / 60
+        let seconds = Int(interval) % 60
+        return String(format: "%02d:%02d", minutes, seconds)
     }
 }
 
 private struct BootAngleCard: View {
     let angle: Double
+    let accelSamples: [AccelSample]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -499,6 +619,33 @@ private struct BootAngleCard: View {
                         .fill(Color(.systemBackground))
                         .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 4)
                 )
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Calibrated G-force (X / Y / Z)")
+                    .font(.subheadline.weight(.semibold))
+                Chart(accelSamples) { sample in
+                    LineMark(
+                        x: .value("Time", sample.timestamp),
+                        y: .value("G", sample.x)
+                    )
+                    .foregroundStyle(.red)
+                    .interpolationMethod(.catmullRom)
+                    LineMark(
+                        x: .value("Time", sample.timestamp),
+                        y: .value("G", sample.y)
+                    )
+                    .foregroundStyle(.green)
+                    .interpolationMethod(.catmullRom)
+                    LineMark(
+                        x: .value("Time", sample.timestamp),
+                        y: .value("G", sample.z)
+                    )
+                    .foregroundStyle(.blue)
+                    .interpolationMethod(.catmullRom)
+                }
+                .chartYScale(domain: -4...4)
+                .frame(height: 160)
+            }
         }
         .padding()
         .background(Color(.secondarySystemBackground))
@@ -553,6 +700,6 @@ private struct Boot3DView: View {
 
 private extension ContentView {
     var bootAngleCard: some View {
-        BootAngleCard(angle: client.latestEdgeAngle)
+        BootAngleCard(angle: client.latestEdgeAngle, accelSamples: client.accelSamples)
     }
 }
