@@ -694,8 +694,8 @@ private struct CalibrationFlowView: View {
 
 private struct RunSessionView: View {
     @Environment(\.dismiss) private var dismiss
-    let session: RideSessionViewModel
-    let client: StreamClient
+    @ObservedObject var session: RideSessionViewModel
+    @ObservedObject var client: StreamClient
     @ObservedObject var locationManager: RideLocationManager
 
     var body: some View {
