@@ -9,18 +9,16 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var client = StreamClient()
-    @State private var urlString = "wss://echo.websocket.events"
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Stream URL")
+                    Text("BLE Stream")
                         .font(.headline)
-                    TextField("wss://example.com/stream", text: $urlString)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled(true)
-                        .textFieldStyle(.roundedBorder)
+                    Text("Device: Carving-Extreem · 100 Hz CSV")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 }
 
                 HStack(spacing: 12) {
@@ -28,7 +26,7 @@ struct ContentView: View {
                         if client.isConnected {
                             client.disconnect()
                         } else {
-                            client.connect(urlString: urlString)
+                            client.connect()
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -44,7 +42,7 @@ struct ContentView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
                         if client.messages.isEmpty {
-                            Text("No messages yet. Connect to start receiving data.")
+                            Text("No BLE data yet. Connect to start streaming from the ESP32.")
                                 .foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         } else {
