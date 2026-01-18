@@ -985,11 +985,12 @@ private struct Boot3DView: View {
 
 private extension ContentView {
     var bootAngleCard: some View {
-        let pitchAngle = client.latestSample.map { client.pitchRoll(from: $0).pitch } ?? 0
+        let pitchRoll = client.latestSample.map { client.pitchRoll(from: $0) }
+        let forwardAngle = pitchRoll?.roll ?? 0
         return BootAngleCard(
             angle: client.latestEdgeAngle,
             tiltAngle: client.latestSignedEdgeAngle,
-            forwardAngle: pitchAngle
+            forwardAngle: forwardAngle
         )
     }
 }
