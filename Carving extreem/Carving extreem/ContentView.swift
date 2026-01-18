@@ -938,6 +938,8 @@ private struct RunSessionView: View {
 private struct BootAngleCard: View {
     let angle: Double
     let tiltAngle: Double
+    let forwardAngle: Double
+    @State private var show3DView = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -950,18 +952,39 @@ private struct BootAngleCard: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text("\(Int(angle))°")
-                    .font(.headline.weight(.semibold))
+                VStack(alignment: .trailing, spacing: 6) {
+                    Toggle("3D view", isOn: $show3DView)
+                        .font(.footnote.weight(.semibold))
+                        .toggleStyle(.switch)
+                    Text("\(Int(angle))°")
+                        .font(.headline.weight(.semibold))
+                }
             }
 
-            BootTiltView(angle: tiltAngle)
-                .frame(height: 180)
-                .frame(maxWidth: .infinity)
-                .background(
-                    RoundedRectangle(cornerRadius: 16)
-                        .fill(Color(.systemBackground))
-                        .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 4)
-                )
+            Group {
+                if show3DView {
+                    Boot3DView(pitchAngle: forwardAngle, rollAngle: tiltAngle)
+                } else {
+                    BootTiltView(angle: tiltAngle)
+                }
+            }
+            .frame(height: 180)
+            .frame(maxWidth: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color(.systemBackground))
+                    .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 4)
+            )
+
+            if show3DView {
+                HStack {
+                    Text("Forward/Aft: \(Int(forwardAngle))°")
+                    Spacer()
+                    Text("Side: \(Int(tiltAngle))°")
+                }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            }
         }
         .padding()
         .background(Color(.secondarySystemBackground))
@@ -1050,8 +1073,55 @@ private struct BootPitchView: View {
     }
 }
 
+private struct Boot3DView: View {
+    let pitchAngle: Double
+    let rollAngle: Double
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 20)
+                .fill(LinearGradient(
+                    colors: [Color.blue.opacity(0.15), Color.purple.opacity(0.1)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                ))
+                .padding(12)
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color.gray.opacity(0.35))
+                    .frame(width: 150, height: 80)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(Color.white.opacity(0.7), lineWidth: 1)
+                    )
+                    .offset(y: 6)
+
+                RoundedRectangle(cornerRadius: 18)
+                    .fill(Color.gray.opacity(0.2))
+                    .frame(width: 120, height: 60)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18)
+                            .stroke(Color.white.opacity(0.6), lineWidth: 1)
+                    )
+                    .offset(y: -18)
+            }
+            .rotation3DEffect(.degrees(-pitchAngle), axis: (x: 1, y: 0, z: 0))
+            .rotation3DEffect(.degrees(rollAngle), axis: (x: 0, y: 0, z: 1))
+            .animation(.spring(response: 0.35, dampingFraction: 0.7), value: pitchAngle)
+            .animation(.spring(response: 0.35, dampingFraction: 0.7), value: rollAngle)
+        }
+        .padding(.vertical, 8)
+    }
+}
+
 private extension ContentView {
     var bootAngleCard: some View {
-        BootAngleCard(angle: client.latestEdgeAngle, tiltAngle: client.latestSignedEdgeAngle)
+        let pitchAngle = client.latestSample.map { client.pitchRoll(from: $0).pitch } ?? 0
+        return BootAngleCard(
+            angle: client.latestEdgeAngle,
+            tiltAngle: client.latestSignedEdgeAngle,
+            forwardAngle: pitchAngle
+        )
     }
 }
