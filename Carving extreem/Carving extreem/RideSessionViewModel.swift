@@ -127,6 +127,12 @@ final class RideSessionViewModel: ObservableObject {
         }
     }
 
+    func ingestLocation(_ location: LocationSample, at date: Date? = nil) {
+        guard isRunning else { return }
+        let sampleDate = date ?? location.timestamp
+        trackLocation(location, at: sampleDate)
+    }
+
     private func pruneSamples() {
         let cutoff = Date().addingTimeInterval(-10)
         edgeSamples.removeAll { $0.timestamp < cutoff }
