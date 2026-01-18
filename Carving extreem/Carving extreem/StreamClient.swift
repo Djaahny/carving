@@ -38,6 +38,8 @@ struct CalibrationState: Codable, Equatable {
     var gyroOffset: [Double]
     var forwardReference: Double
     var sideReference: Double
+    var forwardAxis: Axis
+    var sideAxis: Axis
     var isCalibrated: Bool
 
     static let empty = CalibrationState(
@@ -45,8 +47,54 @@ struct CalibrationState: Codable, Equatable {
         gyroOffset: [0, 0, 0],
         forwardReference: 0,
         sideReference: 0,
+        forwardAxis: .pitch,
+        sideAxis: .roll,
         isCalibrated: false
     )
+
+    private enum CodingKeys: String, CodingKey {
+        case accelOffset
+        case gyroOffset
+        case forwardReference
+        case sideReference
+        case forwardAxis
+        case sideAxis
+        case isCalibrated
+    }
+
+    init(
+        accelOffset: [Double],
+        gyroOffset: [Double],
+        forwardReference: Double,
+        sideReference: Double,
+        forwardAxis: Axis,
+        sideAxis: Axis,
+        isCalibrated: Bool
+    ) {
+        self.accelOffset = accelOffset
+        self.gyroOffset = gyroOffset
+        self.forwardReference = forwardReference
+        self.sideReference = sideReference
+        self.forwardAxis = forwardAxis
+        self.sideAxis = sideAxis
+        self.isCalibrated = isCalibrated
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        accelOffset = try container.decodeIfPresent([Double].self, forKey: .accelOffset) ?? [0, 0, 0]
+        gyroOffset = try container.decodeIfPresent([Double].self, forKey: .gyroOffset) ?? [0, 0, 0]
+        forwardReference = try container.decodeIfPresent(Double.self, forKey: .forwardReference) ?? 0
+        sideReference = try container.decodeIfPresent(Double.self, forKey: .sideReference) ?? 0
+        forwardAxis = try container.decodeIfPresent(Axis.self, forKey: .forwardAxis) ?? .pitch
+        sideAxis = try container.decodeIfPresent(Axis.self, forKey: .sideAxis) ?? .roll
+        isCalibrated = try container.decodeIfPresent(Bool.self, forKey: .isCalibrated) ?? false
+    }
+}
+
+enum Axis: String, Codable {
+    case pitch
+    case roll
 }
 
 private struct Vector3 {
@@ -249,8 +297,9 @@ final class StreamClient: NSObject, ObservableObject {
     private func computeEdgeAngle(from sample: SensorSample) -> Double {
         guard calibrationState.isCalibrated else { return 0 }
         let pitchRoll = pitchRoll(from: sample)
-        let alignedRoll = pitchRoll.roll - calibrationState.sideReference
-        let adjusted = abs(alignedRoll)
+        let sideAngle = axisAngle(for: calibrationState.sideAxis, pitchRoll: pitchRoll)
+        let aligned = sideAngle - calibrationState.sideReference
+        let adjusted = abs(aligned)
         return min(max(adjusted, 0), 90)
     }
 
@@ -286,6 +335,8 @@ final class StreamClient: NSObject, ObservableObject {
         state.gyroOffset = [sample.gx, sample.gy, sample.gz]
         state.forwardReference = 0
         state.sideReference = 0
+        state.forwardAxis = .pitch
+        state.sideAxis = .roll
         state.isCalibrated = false
         saveCalibration(state)
     }
@@ -308,31 +359,34 @@ final class StreamClient: NSObject, ObservableObject {
         state.gyroOffset = [totalGyro.x / count, totalGyro.y / count, totalGyro.z / count]
         state.forwardReference = 0
         state.sideReference = 0
+        state.forwardAxis = .pitch
+        state.sideAxis = .roll
         state.isCalibrated = false
         saveCalibration(state)
     }
 
-    func captureForwardReference() {
-        guard let sample = latestSample else { return }
-        let pitch = pitchRoll(from: sample).pitch
+    func captureForwardReference(axis: Axis, angle: Double) {
         var state = calibrationState
-        state.forwardReference = pitch
+        state.forwardReference = angle
+        state.forwardAxis = axis
+        state.sideAxis = axis == .pitch ? .roll : .pitch
         state.isCalibrated = false
         saveCalibration(state)
     }
 
     func captureSideReference() {
         guard let sample = latestSample else { return }
-        let roll = pitchRoll(from: sample).roll
+        let pitchRoll = pitchRoll(from: sample)
+        let angle = axisAngle(for: calibrationState.sideAxis, pitchRoll: pitchRoll)
         var state = calibrationState
-        state.sideReference = roll
+        state.sideReference = angle
         state.isCalibrated = true
         saveCalibration(state)
     }
 
-    func captureSideReference(roll: Double) {
+    func captureSideReference(angle: Double) {
         var state = calibrationState
-        state.sideReference = roll
+        state.sideReference = angle
         state.isCalibrated = true
         saveCalibration(state)
     }
@@ -342,6 +396,10 @@ final class StreamClient: NSObject, ObservableObject {
         let roll = atan2(leveled.y, leveled.z) * 180 / .pi
         let pitch = atan2(-leveled.x, sqrt(leveled.y * leveled.y + leveled.z * leveled.z)) * 180 / .pi
         return (pitch, roll)
+    }
+
+    private func axisAngle(for axis: Axis, pitchRoll: (pitch: Double, roll: Double)) -> Double {
+        axis == .pitch ? pitchRoll.pitch : pitchRoll.roll
     }
 
     private func leveledAccel(from sample: SensorSample) -> Vector3 {

@@ -281,9 +281,9 @@ private struct CalibrationFlowView: View {
             case .level:
                 return "Place the boot flat on the ground and keep it steady."
             case .forward:
-                return "Tip the boot forward onto the toe (up to 45°). Hold steady and we'll lock the forward axis."
+                return "Tip the boot forward onto the toe (up to 45°). Hold steady for 1.5s, return to flat, then repeat to confirm."
             case .side:
-                return "Rock the boot side to side up to 45° each way. Hold briefly on each edge."
+                return "Rock the boot side to side up to 45° each way. Keep the forward/back tilt within ~10° while holding each edge."
             case .complete:
                 return "You're ready to ride with calibrated references."
             }
@@ -293,6 +293,9 @@ private struct CalibrationFlowView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var step: Step = .level
     @State private var forwardStabilityCount = 0
+    @State private var forwardCaptureCount = 0
+    @State private var forwardNeedsReset = false
+    @State private var forwardAxisCandidate: Axis?
     @State private var maxPositiveRoll: Double = 0
     @State private var maxNegativeRoll: Double = 0
     @State private var sawPositiveRoll = false
@@ -316,6 +319,8 @@ private struct CalibrationFlowView: View {
     private let levelDuration: TimeInterval = 5
     private let forwardHoldDuration: TimeInterval = 1.5
     private let sideHoldDuration: TimeInterval = 1.0
+    private let orthogonalTolerance = 10.0
+    private let forwardFlatTolerance = 6.0
 
     var body: some View {
         NavigationStack {
@@ -380,7 +385,7 @@ private struct CalibrationFlowView: View {
             switch step {
             case .forward:
                 VStack(alignment: .leading, spacing: 16) {
-                    BootPitchView(angle: latestPitch)
+                    BootPitchView(angle: displayForwardAngle)
                         .frame(height: 200)
                         .frame(maxWidth: .infinity)
                         .background(
@@ -392,18 +397,18 @@ private struct CalibrationFlowView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Toe-to-flat calibration")
                             .font(.subheadline.weight(.semibold))
-                        Text("Current: \(formattedAngle(latestPitch))° • Target: 20–45°")
+                        Text("Current: \(formattedAngle(displayForwardAngle))° • Target: 20–45°")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                         ProgressView(value: forwardHoldProgress)
-                        Text(forwardHoldProgress >= 1 ? "Forward reference captured." : "Hold steady for \(forwardHoldDuration, specifier: "%.1f")s")
+                        Text(forwardStatusText)
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
                 }
             case .side:
                 VStack(alignment: .leading, spacing: 16) {
-                    Boot3DView(angle: latestRoll)
+                    Boot3DView(angle: displaySideAngle)
                         .frame(height: 200)
                         .frame(maxWidth: .infinity)
                         .background(
@@ -415,7 +420,7 @@ private struct CalibrationFlowView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Side-to-side calibration")
                             .font(.subheadline.weight(.semibold))
-                        Text("Current: \(formattedAngle(latestRoll))° • Target: 20–45° each side")
+                        Text("Current: \(formattedAngle(displaySideAngle))° • Target: 20–45° each side")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
 
@@ -469,22 +474,47 @@ private struct CalibrationFlowView: View {
         case .level:
             handleLevelSample(sample)
         case .forward:
-            detectForwardReference(pitch: latestPitch)
+            detectForwardReference(pitch: latestPitch, roll: latestRoll)
         case .side:
-            detectSideReference(roll: latestRoll)
+            detectSideReference(pitch: latestPitch, roll: latestRoll)
         default:
             break
         }
     }
 
-    private func detectForwardReference(pitch: Double) {
-        guard abs(pitch) > forwardThreshold else {
-            forwardStabilityCount = 0
-            forwardHoldStart = nil
-            forwardHoldProgress = 0
+    private func detectForwardReference(pitch: Double, roll: Double) {
+        if forwardNeedsReset {
+            if abs(pitch) <= forwardFlatTolerance, abs(roll) <= forwardFlatTolerance {
+                forwardNeedsReset = false
+                forwardHoldStart = nil
+                forwardHoldProgress = 0
+            }
             return
         }
 
+        guard let axis = selectedForwardAxis(pitch: pitch, roll: roll) else {
+            resetForwardHold()
+            return
+        }
+
+        if let candidate = forwardAxisCandidate, candidate != axis {
+            resetForwardTracking()
+            return
+        }
+
+        let axisAngle = axis == .pitch ? pitch : roll
+        let orthogonalAngle = axis == .pitch ? roll : pitch
+        guard abs(orthogonalAngle) <= orthogonalTolerance else {
+            resetForwardHold()
+            return
+        }
+
+        guard abs(axisAngle) > forwardThreshold else {
+            resetForwardHold()
+            return
+        }
+
+        forwardAxisCandidate = axis
         forwardStabilityCount += 1
         let now = Date()
         if forwardHoldStart == nil {
@@ -493,15 +523,29 @@ private struct CalibrationFlowView: View {
         guard let holdStart = forwardHoldStart else { return }
         forwardHoldProgress = min(max(now.timeIntervalSince(holdStart) / forwardHoldDuration, 0), 1)
         if forwardStabilityCount >= stabilityTarget, now.timeIntervalSince(holdStart) >= forwardHoldDuration {
-            client.captureForwardReference()
+            forwardCaptureCount += 1
+            if forwardCaptureCount < 2 {
+                forwardNeedsReset = true
+                resetForwardHold()
+                return
+            }
+            client.captureForwardReference(axis: axis, angle: axisAngle)
             resetSideTracking()
             step = .side
         }
     }
 
-    private func detectSideReference(roll: Double) {
-        if roll > sideThreshold {
-            maxPositiveRoll = max(maxPositiveRoll, roll)
+    private func detectSideReference(pitch: Double, roll: Double) {
+        let sideAxis = client.calibrationState.sideAxis
+        let sideAngle = sideAxis == .pitch ? pitch : roll
+        let orthogonalAngle = sideAxis == .pitch ? roll : pitch
+        guard abs(orthogonalAngle) <= orthogonalTolerance else {
+            resetSideHold()
+            return
+        }
+
+        if sideAngle > sideThreshold {
+            maxPositiveRoll = max(maxPositiveRoll, sideAngle)
             if sidePositiveHoldStart == nil {
                 sidePositiveHoldStart = Date()
             }
@@ -512,8 +556,8 @@ private struct CalibrationFlowView: View {
             if let holdStart = sidePositiveHoldStart {
                 sidePositiveProgress = min(max(Date().timeIntervalSince(holdStart) / sideHoldDuration, 0), 1)
             }
-        } else if roll < -sideThreshold {
-            maxNegativeRoll = min(maxNegativeRoll, roll)
+        } else if sideAngle < -sideThreshold {
+            maxNegativeRoll = min(maxNegativeRoll, sideAngle)
             if sideNegativeHoldStart == nil {
                 sideNegativeHoldStart = Date()
             }
@@ -525,24 +569,20 @@ private struct CalibrationFlowView: View {
                 sideNegativeProgress = min(max(Date().timeIntervalSince(holdStart) / sideHoldDuration, 0), 1)
             }
         } else {
-            sidePositiveHoldStart = nil
-            sideNegativeHoldStart = nil
-            if !sawPositiveRoll {
-                sidePositiveProgress = 0
-            }
-            if !sawNegativeRoll {
-                sideNegativeProgress = 0
-            }
+            resetSideHold()
         }
 
         guard sawPositiveRoll, sawNegativeRoll else { return }
         let midpoint = (maxPositiveRoll + maxNegativeRoll) / 2
-        client.captureSideReference(roll: midpoint)
+        client.captureSideReference(angle: midpoint)
         step = .complete
     }
 
     private func resetSideTracking() {
         forwardStabilityCount = 0
+        forwardCaptureCount = 0
+        forwardNeedsReset = false
+        forwardAxisCandidate = nil
         forwardHoldStart = nil
         forwardHoldProgress = 0
         maxPositiveRoll = 0
@@ -564,6 +604,64 @@ private struct CalibrationFlowView: View {
 
     private func formattedAngle(_ angle: Double) -> String {
         String(format: "%.1f", angle)
+    }
+
+    private var displayForwardAngle: Double {
+        let axis = forwardAxisCandidate ?? (abs(latestPitch) >= abs(latestRoll) ? .pitch : .roll)
+        return axis == .pitch ? latestPitch : latestRoll
+    }
+
+    private var displaySideAngle: Double {
+        let axis = client.calibrationState.sideAxis
+        return axis == .pitch ? latestPitch : latestRoll
+    }
+
+    private var forwardStatusText: String {
+        if forwardNeedsReset {
+            return "Return to flat to confirm."
+        }
+        if forwardCaptureCount == 1 {
+            return forwardHoldProgress >= 1 ? "Forward reference confirmed." : "Hold steady again for \(forwardHoldDuration, specifier: "%.1f")s"
+        }
+        return forwardHoldProgress >= 1 ? "Forward reference captured." : "Hold steady for \(forwardHoldDuration, specifier: "%.1f")s"
+    }
+
+    private func selectedForwardAxis(pitch: Double, roll: Double) -> Axis? {
+        let pitchCandidate = abs(pitch) >= forwardThreshold && abs(roll) <= orthogonalTolerance
+        let rollCandidate = abs(roll) >= forwardThreshold && abs(pitch) <= orthogonalTolerance
+        if pitchCandidate && !rollCandidate {
+            return .pitch
+        }
+        if rollCandidate && !pitchCandidate {
+            return .roll
+        }
+        return nil
+    }
+
+    private func resetForwardHold() {
+        forwardStabilityCount = 0
+        forwardHoldStart = nil
+        forwardHoldProgress = 0
+    }
+
+    private func resetForwardTracking() {
+        forwardStabilityCount = 0
+        forwardCaptureCount = 0
+        forwardNeedsReset = false
+        forwardAxisCandidate = nil
+        forwardHoldStart = nil
+        forwardHoldProgress = 0
+    }
+
+    private func resetSideHold() {
+        sidePositiveHoldStart = nil
+        sideNegativeHoldStart = nil
+        if !sawPositiveRoll {
+            sidePositiveProgress = 0
+        }
+        if !sawNegativeRoll {
+            sideNegativeProgress = 0
+        }
     }
 
     private func handleLevelSample(_ sample: SensorSample) {
