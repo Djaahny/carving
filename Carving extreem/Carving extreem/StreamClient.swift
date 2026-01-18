@@ -32,6 +32,8 @@ struct CalibrationState: Codable, Equatable {
     var sideReference: Double
     var forwardAxis: Axis
     var sideAxis: Axis
+    var forwardPitch: Double
+    var forwardRoll: Double
     var isCalibrated: Bool
 
     static let empty = CalibrationState(
@@ -41,6 +43,8 @@ struct CalibrationState: Codable, Equatable {
         sideReference: 0,
         forwardAxis: .pitch,
         sideAxis: .roll,
+        forwardPitch: 0,
+        forwardRoll: 0,
         isCalibrated: false
     )
 
@@ -51,6 +55,8 @@ struct CalibrationState: Codable, Equatable {
         case sideReference
         case forwardAxis
         case sideAxis
+        case forwardPitch
+        case forwardRoll
         case isCalibrated
     }
 
@@ -61,6 +67,8 @@ struct CalibrationState: Codable, Equatable {
         sideReference: Double,
         forwardAxis: Axis,
         sideAxis: Axis,
+        forwardPitch: Double,
+        forwardRoll: Double,
         isCalibrated: Bool
     ) {
         self.accelOffset = accelOffset
@@ -69,6 +77,8 @@ struct CalibrationState: Codable, Equatable {
         self.sideReference = sideReference
         self.forwardAxis = forwardAxis
         self.sideAxis = sideAxis
+        self.forwardPitch = forwardPitch
+        self.forwardRoll = forwardRoll
         self.isCalibrated = isCalibrated
     }
 
@@ -80,6 +90,8 @@ struct CalibrationState: Codable, Equatable {
         sideReference = try container.decodeIfPresent(Double.self, forKey: .sideReference) ?? 0
         forwardAxis = try container.decodeIfPresent(Axis.self, forKey: .forwardAxis) ?? .pitch
         sideAxis = try container.decodeIfPresent(Axis.self, forKey: .sideAxis) ?? .roll
+        forwardPitch = try container.decodeIfPresent(Double.self, forKey: .forwardPitch) ?? 0
+        forwardRoll = try container.decodeIfPresent(Double.self, forKey: .forwardRoll) ?? 0
         isCalibrated = try container.decodeIfPresent(Bool.self, forKey: .isCalibrated) ?? false
     }
 }
@@ -334,6 +346,8 @@ final class StreamClient: NSObject, ObservableObject {
         state.sideReference = 0
         state.forwardAxis = .pitch
         state.sideAxis = .roll
+        state.forwardPitch = 0
+        state.forwardRoll = 0
         state.isCalibrated = false
         saveCalibration(state)
     }
@@ -358,15 +372,19 @@ final class StreamClient: NSObject, ObservableObject {
         state.sideReference = 0
         state.forwardAxis = .pitch
         state.sideAxis = .roll
+        state.forwardPitch = 0
+        state.forwardRoll = 0
         state.isCalibrated = false
         saveCalibration(state)
     }
 
-    func captureForwardReference(axis: Axis, angle: Double) {
+    func captureForwardReference(axis: Axis, angle: Double, pitch: Double, roll: Double) {
         var state = calibrationState
         state.forwardReference = angle
         state.forwardAxis = axis
         state.sideAxis = axis == .pitch ? .roll : .pitch
+        state.forwardPitch = pitch
+        state.forwardRoll = roll
         state.isCalibrated = false
         saveCalibration(state)
     }
@@ -389,9 +407,9 @@ final class StreamClient: NSObject, ObservableObject {
     }
 
     func pitchRoll(from sample: SensorSample) -> (pitch: Double, roll: Double) {
-        let leveled = leveledAccel(from: sample)
-        let roll = atan2(leveled.y, leveled.z) * 180 / .pi
-        let pitch = atan2(-leveled.x, sqrt(leveled.y * leveled.y + leveled.z * leveled.z)) * 180 / .pi
+        let oriented = orientedAccel(from: sample)
+        let roll = atan2(oriented.y, oriented.z) * 180 / .pi
+        let pitch = atan2(-oriented.x, sqrt(oriented.y * oriented.y + oriented.z * oriented.z)) * 180 / .pi
         return (pitch, roll)
     }
 
@@ -407,6 +425,27 @@ final class StreamClient: NSObject, ObservableObject {
             z: calibrationState.accelOffset[2]
         )
         return rotateVector(raw, aligning: flat)
+    }
+
+    private func orientedAccel(from sample: SensorSample) -> Vector3 {
+        let leveled = leveledAccel(from: sample)
+        let yawOffset = orientationYawOffset()
+        if abs(yawOffset) < rotationEpsilon {
+            return leveled
+        }
+        return rotateAroundZ(leveled, angle: -yawOffset)
+    }
+
+    private func orientationYawOffset() -> Double {
+        let pitch = calibrationState.forwardPitch
+        let roll = calibrationState.forwardRoll
+        let magnitude = hypot(pitch, roll)
+        guard magnitude > rotationEpsilon else {
+            return 0
+        }
+        let measuredAngle = atan2(roll, pitch)
+        let desiredAngle = calibrationState.forwardAxis == .pitch ? 0 : Double.pi / 2
+        return measuredAngle - desiredAngle
     }
 
     private func rotateVector(_ vector: Vector3, aligning flatReference: Vector3) -> Vector3 {
@@ -454,6 +493,16 @@ final class StreamClient: NSObject, ObservableObject {
             x: term1.x + term2.x + term3.x,
             y: term1.y + term2.y + term3.y,
             z: term1.z + term2.z + term3.z
+        )
+    }
+
+    private func rotateAroundZ(_ vector: Vector3, angle: Double) -> Vector3 {
+        let cosAngle = cos(angle)
+        let sinAngle = sin(angle)
+        return Vector3(
+            x: vector.x * cosAngle - vector.y * sinAngle,
+            y: vector.x * sinAngle + vector.y * cosAngle,
+            z: vector.z
         )
     }
 }

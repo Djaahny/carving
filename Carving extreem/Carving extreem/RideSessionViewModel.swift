@@ -14,9 +14,11 @@ final class RideSessionViewModel: ObservableObject {
     private var timerCancellable: AnyCancellable?
     private var lastTimeCalloutCount = 0
     private var lastEdgeCalloutTime: Date?
+    private var lastSampleTime: Date?
     private let speechSynthesizer = AVSpeechSynthesizer()
     private let edgeThreshold = 60.0
     private let audioSession = AVAudioSession.sharedInstance()
+    private let minSampleInterval: TimeInterval = 0.05
 
     init() {
         configureAudioSession()
@@ -32,6 +34,7 @@ final class RideSessionViewModel: ObservableObject {
         edgeSamples = []
         lastTimeCalloutCount = 0
         lastEdgeCalloutTime = nil
+        lastSampleTime = nil
 
         timerCancellable = Timer.publish(every: 1, on: .main, in: .common)
             .autoconnect()
@@ -51,6 +54,10 @@ final class RideSessionViewModel: ObservableObject {
 
     func ingest(edgeAngle: Double, at date: Date = Date()) {
         guard isRunning else { return }
+        if let lastSampleTime, date.timeIntervalSince(lastSampleTime) < minSampleInterval {
+            return
+        }
+        lastSampleTime = date
         edgeSamples.append(EdgeSample(timestamp: date, angle: edgeAngle))
         pruneSamples()
         handleEdgeCallout(angle: edgeAngle)
