@@ -42,12 +42,12 @@ final class StreamClient: ObservableObject {
                 case .success(let message):
                     switch message {
                     case .string(let text):
-                        appendMessage(text)
+                        self.appendMessage(text)
                     case .data(let data):
                         let text = String(decoding: data, as: UTF8.self)
-                        appendMessage(text)
+                        self.appendMessage(text)
                     @unknown default:
-                        appendMessage("Received unsupported message")
+                        self.appendMessage("Received unsupported message")
                     }
                     if self.isConnected {
                         self.receiveNext()
