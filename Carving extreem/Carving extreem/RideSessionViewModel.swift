@@ -31,11 +31,11 @@ final class RideSessionViewModel: ObservableObject {
     private var lastLocationSampleTime: Date?
     private let speechSynthesizer = AVSpeechSynthesizer()
     private let audioSession = AVAudioSession.sharedInstance()
-    private let minSampleInterval: TimeInterval = 0.05
+    private let minSampleInterval: TimeInterval = 0
     private let edgeThresholdKey = "edgeCalloutThreshold"
     private let defaultEdgeThreshold = 60.0
-    private let backgroundSampleInterval: TimeInterval = 0.25
-    private let locationSampleInterval: TimeInterval = 0.5
+    private let backgroundSampleInterval: TimeInterval = 0
+    private let locationSampleInterval: TimeInterval = 0
 
     private let turnSettings = TurnDetectorSettings()
     private var gravityEstimate: Vector3?
