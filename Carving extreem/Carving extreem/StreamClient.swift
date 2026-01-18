@@ -17,6 +17,22 @@ struct EdgeSample: Identifiable {
     let angle: Double
 }
 
+struct AccelSample: Identifiable {
+    let id = UUID()
+    let timestamp: Date
+    let x: Double
+    let y: Double
+    let z: Double
+}
+
+struct CalibratedAccel: Equatable {
+    let x: Double
+    let y: Double
+    let z: Double
+
+    static let zero = CalibratedAccel(x: 0, y: 0, z: 0)
+}
+
 struct CalibrationState: Codable, Equatable {
     var accelOffset: [Double]
     var gyroOffset: [Double]
@@ -43,6 +59,8 @@ final class StreamClient: NSObject, ObservableObject {
     @Published private(set) var latestSample: SensorSample?
     @Published private(set) var latestEdgeAngle: Double = 0
     @Published private(set) var calibrationState: CalibrationState = .empty
+    @Published private(set) var accelSamples: [AccelSample] = []
+    @Published private(set) var latestCalibratedAccel: CalibratedAccel = .zero
 
     private let deviceName = "Carving-Extreem"
     private let serviceUUID = CBUUID(string: "7a3f0001-3c12-4b50-8d32-9f8c8a3d8f31")
@@ -52,10 +70,13 @@ final class StreamClient: NSObject, ObservableObject {
     private let calibrationKey = "calibrationState"
     private let gravity = 9.80665
     private let radiansToDegrees = 180.0 / Double.pi
+    private let edgeAngleSmoothingAlpha = 0.18
+    private let accelWindowSeconds: TimeInterval = 5
 
     private var centralManager: CBCentralManager!
     private var peripheral: CBPeripheral?
     private var dataCharacteristic: CBCharacteristic?
+    private var smoothedEdgeAngle: Double?
 
     override init() {
         super.init()
@@ -186,7 +207,14 @@ final class StreamClient: NSObject, ObservableObject {
             gz: gz * radiansToDegrees
         )
         latestSample = sample
-        latestEdgeAngle = computeEdgeAngle(from: sample)
+        updateCalibratedAccel(from: sample)
+        let rawEdgeAngle = computeEdgeAngle(from: sample)
+        if let smoothedEdgeAngle {
+            self.smoothedEdgeAngle = smoothedEdgeAngle + edgeAngleSmoothingAlpha * (rawEdgeAngle - smoothedEdgeAngle)
+        } else {
+            smoothedEdgeAngle = rawEdgeAngle
+        }
+        latestEdgeAngle = smoothedEdgeAngle ?? rawEdgeAngle
     }
 
     private func computeEdgeAngle(from sample: SensorSample) -> Double {
@@ -201,6 +229,19 @@ final class StreamClient: NSObject, ObservableObject {
         let correctedRoll = alignedRoll * cos(alignedPitch * .pi / 180)
         let adjusted = abs(correctedRoll)
         return min(max(adjusted, 0), 90)
+    }
+
+    private func updateCalibratedAccel(from sample: SensorSample) {
+        let calibrated = CalibratedAccel(
+            x: sample.ax - calibrationState.accelOffset[0],
+            y: sample.ay - calibrationState.accelOffset[1],
+            z: sample.az - calibrationState.accelOffset[2]
+        )
+        latestCalibratedAccel = calibrated
+        let timestamp = Date()
+        accelSamples.append(AccelSample(timestamp: timestamp, x: calibrated.x, y: calibrated.y, z: calibrated.z))
+        let cutoff = timestamp.addingTimeInterval(-accelWindowSeconds)
+        accelSamples.removeAll { $0.timestamp < cutoff }
     }
 
     private func saveCalibration(_ state: CalibrationState) {
@@ -223,6 +264,28 @@ final class StreamClient: NSObject, ObservableObject {
         var state = calibrationState
         state.accelOffset = [sample.ax, sample.ay, sample.az]
         state.gyroOffset = [sample.gx, sample.gy, sample.gz]
+        state.forwardReference = 0
+        state.sideReference = 0
+        state.isCalibrated = false
+        saveCalibration(state)
+    }
+
+    func captureZeroCalibration(samples: [SensorSample]) {
+        guard !samples.isEmpty else { return }
+        let count = Double(samples.count)
+        let totalAccel = samples.reduce(into: (x: 0.0, y: 0.0, z: 0.0)) { result, sample in
+            result.x += sample.ax
+            result.y += sample.ay
+            result.z += sample.az
+        }
+        let totalGyro = samples.reduce(into: (x: 0.0, y: 0.0, z: 0.0)) { result, sample in
+            result.x += sample.gx
+            result.y += sample.gy
+            result.z += sample.gz
+        }
+        var state = calibrationState
+        state.accelOffset = [totalAccel.x / count, totalAccel.y / count, totalAccel.z / count]
+        state.gyroOffset = [totalGyro.x / count, totalGyro.y / count, totalGyro.z / count]
         state.forwardReference = 0
         state.sideReference = 0
         state.isCalibrated = false

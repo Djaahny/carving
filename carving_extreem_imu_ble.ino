@@ -38,6 +38,10 @@ constexpr float ACCEL_CUTOFF_HZ = 12.0f;
 constexpr float GYRO_CUTOFF_HZ = 18.0f;
 constexpr float FILTER_Q = 0.707f; // Butterworth
 
+// IMU dynamic ranges (keep headroom for skiing impacts)
+constexpr auto ACCEL_RANGE = bfs::Mpu9250::ACCEL_RANGE_16G;
+constexpr auto GYRO_RANGE = bfs::Mpu9250::GYRO_RANGE_2000DPS;
+
 // BLE settings
 constexpr char DEVICE_NAME[] = "Carving-Extreem";
 constexpr char SERVICE_UUID[] = "7a3f0001-3c12-4b50-8d32-9f8c8a3d8f31";
@@ -100,6 +104,24 @@ void SetupImu() {
   if (!imu.Begin()) {
     if (DEBUG_SERIAL) {
       Serial.println("Error initializing communication with IMU");
+    }
+    while (true) {
+      delay(1000);
+    }
+  }
+
+  if (!imu.ConfigAccelRange(ACCEL_RANGE)) {
+    if (DEBUG_SERIAL) {
+      Serial.println("Error configuring accel range");
+    }
+    while (true) {
+      delay(1000);
+    }
+  }
+
+  if (!imu.ConfigGyroRange(GYRO_RANGE)) {
+    if (DEBUG_SERIAL) {
+      Serial.println("Error configuring gyro range");
     }
     while (true) {
       delay(1000);
