@@ -745,7 +745,12 @@ private struct CalibrationFlowView: View {
         if count >= sideCaptureTarget {
             return "Captured \(sideCaptureTarget)/\(sideCaptureTarget)"
         }
-        return "Hold \(sideHoldDuration, specifier: "%.1f")s (\(count)/\(sideCaptureTarget))"
+        return String(
+            format: "Hold %.1fs (%d/%d)",
+            sideHoldDuration,
+            count,
+            sideCaptureTarget
+        )
     }
 }
 
