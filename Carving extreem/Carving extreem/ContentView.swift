@@ -6,6 +6,7 @@
 //
 
 import Charts
+import CoreLocation
 import SwiftUI
 
 struct ContentView: View {
