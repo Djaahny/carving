@@ -966,14 +966,15 @@ private struct BootSceneView: UIViewRepresentable {
         let tiltNode = SCNNode()
         let bootNode = scene.rootNode.childNodes.first ?? SCNNode()
         bootNode.removeFromParentNode()
-        bootNode.eulerAngles = SCNVector3(-0.2, .pi, 0)
+        bootNode.eulerAngles = .zero
+        normalizeBootNode(bootNode)
         tiltNode.addChildNode(bootNode)
         scene.rootNode.addChildNode(tiltNode)
         context.coordinator.tiltNode = tiltNode
 
         let cameraNode = SCNNode()
         cameraNode.camera = SCNCamera()
-        cameraNode.position = SCNVector3(0, 0.2, 6)
+        cameraNode.position = SCNVector3(-6, 0, 0)
         cameraNode.look(at: SCNVector3(0, 0, 0))
         scene.rootNode.addChildNode(cameraNode)
 
@@ -990,6 +991,28 @@ private struct BootSceneView: UIViewRepresentable {
     func updateUIView(_ uiView: SCNView, context: Context) {
         let tiltRadians = Float(tiltAngle * .pi / 180)
         context.coordinator.tiltNode?.eulerAngles.z = tiltRadians
+    }
+
+    private func normalizeBootNode(_ bootNode: SCNNode) {
+        let (minBounds, maxBounds) = bootNode.boundingBox
+        let size = SCNVector3(
+            maxBounds.x - minBounds.x,
+            maxBounds.y - minBounds.y,
+            maxBounds.z - minBounds.z
+        )
+        let maxDimension = max(size.x, max(size.y, size.z))
+        guard maxDimension > 0 else { return }
+
+        let center = SCNVector3(
+            (minBounds.x + maxBounds.x) / 2,
+            (minBounds.y + maxBounds.y) / 2,
+            (minBounds.z + maxBounds.z) / 2
+        )
+        bootNode.pivot = SCNMatrix4MakeTranslation(center.x, center.y, center.z)
+
+        let targetSize: Float = 2.4
+        let scale = targetSize / maxDimension
+        bootNode.scale = SCNVector3(scale, scale, scale)
     }
 
     final class Coordinator {
