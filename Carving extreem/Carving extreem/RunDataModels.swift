@@ -93,6 +93,18 @@ struct RunRecord: Codable, Identifiable {
     let turnWindows: [TurnWindow]
     let backgroundSamples: [BackgroundSample]
     let locationTrack: [LocationSample]
+    let edgeSamples: [EdgeSample]
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case date
+        case runNumber
+        case name
+        case turnWindows
+        case backgroundSamples
+        case locationTrack
+        case edgeSamples
+    }
 
     init(
         date: Date,
@@ -100,7 +112,8 @@ struct RunRecord: Codable, Identifiable {
         name: String,
         turnWindows: [TurnWindow],
         backgroundSamples: [BackgroundSample],
-        locationTrack: [LocationSample]
+        locationTrack: [LocationSample],
+        edgeSamples: [EdgeSample]
     ) {
         self.id = UUID()
         self.date = date
@@ -109,5 +122,30 @@ struct RunRecord: Codable, Identifiable {
         self.turnWindows = turnWindows
         self.backgroundSamples = backgroundSamples
         self.locationTrack = locationTrack
+        self.edgeSamples = edgeSamples
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        date = try container.decode(Date.self, forKey: .date)
+        runNumber = try container.decode(Int.self, forKey: .runNumber)
+        name = try container.decode(String.self, forKey: .name)
+        turnWindows = try container.decodeIfPresent([TurnWindow].self, forKey: .turnWindows) ?? []
+        backgroundSamples = try container.decodeIfPresent([BackgroundSample].self, forKey: .backgroundSamples) ?? []
+        locationTrack = try container.decodeIfPresent([LocationSample].self, forKey: .locationTrack) ?? []
+        edgeSamples = try container.decodeIfPresent([EdgeSample].self, forKey: .edgeSamples) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(date, forKey: .date)
+        try container.encode(runNumber, forKey: .runNumber)
+        try container.encode(name, forKey: .name)
+        try container.encode(turnWindows, forKey: .turnWindows)
+        try container.encode(backgroundSamples, forKey: .backgroundSamples)
+        try container.encode(locationTrack, forKey: .locationTrack)
+        try container.encode(edgeSamples, forKey: .edgeSamples)
     }
 }
