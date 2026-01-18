@@ -529,7 +529,7 @@ private struct CalibrationFlowView: View {
                 resetForwardHold()
                 return
             }
-            client.captureForwardReference(axis: axis, angle: axisAngle)
+            client.captureForwardReference(axis: axis, angle: axisAngle, pitch: pitch, roll: roll)
             resetSideTracking()
             step = .side
         }
