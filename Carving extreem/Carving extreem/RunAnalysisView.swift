@@ -1,4 +1,5 @@
 import Charts
+import CoreLocation
 import MapKit
 import SwiftUI
 
@@ -6,10 +7,13 @@ struct RunAnalysisView: View {
     let run: RunRecord
     @State private var selectedTurnID: TurnWindow.ID?
     @State private var selectedTurnProgress: Double?
+    @State private var lastSelectedTurnProgress: Double?
     @State private var mapPosition: MapCameraPosition = .automatic
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            runSummaryCard
+
             Text("Turn analysis")
                 .font(.headline)
 
@@ -90,8 +94,8 @@ struct RunAnalysisView: View {
                         startPoint: .top,
                         endPoint: .bottom
                     ))
-                    if let selectedTurnProgress {
-                        RuleMark(x: .value("Selected turn progress", selectedTurnProgress))
+                    if let activeTurnProgress {
+                        RuleMark(x: .value("Selected turn progress", activeTurnProgress))
                             .foregroundStyle(.orange)
                             .lineStyle(StrokeStyle(lineWidth: 2, dash: [4, 4]))
                     }
@@ -109,6 +113,11 @@ struct RunAnalysisView: View {
             }
         }
         .padding()
+        .onChange(of: selectedTurnProgress) { _, newValue in
+            if let newValue {
+                lastSelectedTurnProgress = newValue
+            }
+        }
     }
 
     private var trackCoordinates: [CLLocationCoordinate2D] {
@@ -138,21 +147,24 @@ struct RunAnalysisView: View {
     private var selectedSample: TurnChartSample? {
         guard let turn = selectedTurn else { return nil }
         let samples = turnChartSamples(for: turn)
-        guard let selectedTurnProgress else { return samples.max(by: { $0.edgeAngle < $1.edgeAngle }) }
-        return samples.min(by: { abs($0.progress - selectedTurnProgress) < abs($1.progress - selectedTurnProgress) })
+        guard let activeTurnProgress else { return samples.max(by: { $0.edgeAngle < $1.edgeAngle }) }
+        return samples.min(by: { abs($0.progress - activeTurnProgress) < abs($1.progress - activeTurnProgress) })
     }
 
     private func updateSelectedProgress(for turn: TurnWindow?) {
         guard let turn else {
             selectedTurnProgress = nil
+            lastSelectedTurnProgress = nil
             return
         }
         let samples = turnChartSamples(for: turn)
         guard let peakSample = samples.max(by: { $0.edgeAngle < $1.edgeAngle }) else {
             selectedTurnProgress = nil
+            lastSelectedTurnProgress = nil
             return
         }
         selectedTurnProgress = peakSample.progress
+        lastSelectedTurnProgress = peakSample.progress
     }
 
     private func updateMapPosition() {
@@ -211,6 +223,99 @@ struct RunAnalysisView: View {
                 .font(.headline)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var activeTurnProgress: Double? {
+        selectedTurnProgress ?? lastSelectedTurnProgress
+    }
+
+    private var runSummaryCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Run summary")
+                .font(.headline)
+            HStack(spacing: 12) {
+                summaryTile(title: "Max speed", value: formattedSpeed(maxSpeedKmh))
+                summaryTile(title: "Avg speed", value: formattedSpeed(averageSpeedKmh))
+            }
+            HStack(spacing: 12) {
+                summaryTile(title: "Turns", value: "\(run.turnWindows.count)")
+                summaryTile(title: "Run time", value: formattedDuration(runDuration))
+            }
+            HStack(spacing: 12) {
+                summaryTile(title: "Length", value: formattedDistance(runDistanceMeters))
+            }
+        }
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func summaryTile(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.headline)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var maxSpeedKmh: Double? {
+        let speeds = run.locationTrack.map { max($0.speed, 0) }
+        guard let maxSpeed = speeds.max() else { return nil }
+        return maxSpeed * 3.6
+    }
+
+    private var averageSpeedKmh: Double? {
+        let speeds = run.locationTrack.map { max($0.speed, 0) }
+        guard !speeds.isEmpty else { return nil }
+        let average = speeds.reduce(0, +) / Double(speeds.count)
+        return average * 3.6
+    }
+
+    private var runDuration: TimeInterval? {
+        let timestamps = run.locationTrack.map(\.timestamp)
+            + run.backgroundSamples.map(\.timestamp)
+            + run.turnWindows.flatMap { [$0.startTime, $0.endTime] }
+        guard let start = timestamps.min(), let end = timestamps.max() else { return nil }
+        return max(end.timeIntervalSince(start), 0)
+    }
+
+    private var runDistanceMeters: Double? {
+        guard run.locationTrack.count > 1 else { return nil }
+        var total: Double = 0
+        for index in 1..<run.locationTrack.count {
+            let previous = run.locationTrack[index - 1]
+            let current = run.locationTrack[index]
+            let previousLocation = CLLocation(latitude: previous.latitude, longitude: previous.longitude)
+            let currentLocation = CLLocation(latitude: current.latitude, longitude: current.longitude)
+            total += currentLocation.distance(from: previousLocation)
+        }
+        return total
+    }
+
+    private func formattedSpeed(_ speed: Double?) -> String {
+        guard let speed else { return "—" }
+        return String(format: "%.1f km/h", speed)
+    }
+
+    private func formattedDuration(_ duration: TimeInterval?) -> String {
+        guard let duration else { return "—" }
+        let minutes = Int(duration) / 60
+        let seconds = Int(duration) % 60
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    private func formattedDistance(_ distance: Double?) -> String {
+        guard let distance else { return "—" }
+        if distance >= 1000 {
+            return String(format: "%.2f km", distance / 1000)
+        }
+        return String(format: "%.0f m", distance)
     }
 }
 

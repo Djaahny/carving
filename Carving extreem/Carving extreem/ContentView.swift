@@ -320,11 +320,11 @@ private struct CalibrationFlowView: View {
         var message: String {
             switch self {
             case .level:
-                return "Place the boot flat on the ground and keep it steady."
+                return "Place the boot flat on the ground and keep it steady. This flat calibration is reused for the next steps, so keep the sensor mounted in its ride position."
             case .forward:
-                return "Tip the boot forward onto the toe (up to 45°). Hold steady for 1.5s, return to flat, then repeat to confirm."
+                return "Tip the boot to the forward/back angle you want (sensor can face any direction). Hold steady for 1.5s, return to flat, then repeat to confirm."
             case .side:
-                return "Rock the boot side to side up to 45° each way. Keep the forward/back tilt within ~10° while holding each edge."
+                return "Rock the boot side to side up to 45° each way. You can lay the boot on its side; the flat calibration keeps the sensor aligned."
             case .complete:
                 return "You're ready to ride with calibrated references."
             }
@@ -360,7 +360,6 @@ private struct CalibrationFlowView: View {
     private let levelDuration: TimeInterval = 5
     private let forwardHoldDuration: TimeInterval = 1.5
     private let sideHoldDuration: TimeInterval = 1.0
-    private let orthogonalTolerance = 10.0
     private let forwardFlatTolerance = 6.0
 
     var body: some View {
@@ -533,14 +532,8 @@ private struct CalibrationFlowView: View {
             return
         }
 
-        let axis: Axis = .pitch
-        let axisAngle = pitch
-        let orthogonalAngle = roll
-        guard abs(orthogonalAngle) <= orthogonalTolerance else {
-            resetForwardHold()
-            return
-        }
-
+        let axis: Axis = abs(pitch) >= abs(roll) ? .pitch : .roll
+        let axisAngle = axis == .pitch ? pitch : roll
         guard abs(axisAngle) > forwardThreshold else {
             resetForwardHold()
             return
@@ -568,12 +561,8 @@ private struct CalibrationFlowView: View {
     }
 
     private func detectSideReference(pitch: Double, roll: Double) {
-        let sideAngle = roll
-        let orthogonalAngle = pitch
-        guard abs(orthogonalAngle) <= orthogonalTolerance else {
-            resetSideHold()
-            return
-        }
+        let sideAxis = client.calibrationState.sideAxis
+        let sideAngle = sideAxis == .roll ? roll : pitch
 
         if sideAngle > sideThreshold {
             maxPositiveRoll = max(maxPositiveRoll, sideAngle)
@@ -638,11 +627,13 @@ private struct CalibrationFlowView: View {
     }
 
     private var displayForwardAngle: Double {
-        latestPitch
+        let axis = forwardAxisCandidate ?? (abs(latestPitch) >= abs(latestRoll) ? .pitch : .roll)
+        return axis == .pitch ? latestPitch : latestRoll
     }
 
     private var displaySideAngle: Double {
-        latestRoll
+        let axis = client.calibrationState.sideAxis
+        return axis == .roll ? latestRoll : latestPitch
     }
 
     private var forwardStatusText: String {
