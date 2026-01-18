@@ -8,7 +8,14 @@ final class RideSessionViewModel: ObservableObject {
     @Published var elapsed: TimeInterval = 0
     @Published var timeCalloutsEnabled = true
     @Published var edgeCalloutsEnabled = true
+    @Published var edgeCalloutThreshold: Double {
+        didSet {
+            UserDefaults.standard.set(edgeCalloutThreshold, forKey: edgeThresholdKey)
+        }
+    }
     @Published var edgeSamples: [EdgeSample] = []
+    @Published var latestEdgeAngle: Double = 0
+    @Published var latestSpeedMetersPerSecond: Double = 0
 
     private var startDate: Date?
     private var timerCancellable: AnyCancellable?
@@ -16,11 +23,14 @@ final class RideSessionViewModel: ObservableObject {
     private var lastEdgeCalloutTime: Date?
     private var lastSampleTime: Date?
     private let speechSynthesizer = AVSpeechSynthesizer()
-    private let edgeThreshold = 60.0
     private let audioSession = AVAudioSession.sharedInstance()
     private let minSampleInterval: TimeInterval = 0.05
+    private let edgeThresholdKey = "edgeCalloutThreshold"
+    private let defaultEdgeThreshold = 60.0
 
     init() {
+        let storedThreshold = UserDefaults.standard.object(forKey: edgeThresholdKey) as? Double
+        edgeCalloutThreshold = storedThreshold ?? defaultEdgeThreshold
         configureAudioSession()
     }
 
@@ -52,15 +62,17 @@ final class RideSessionViewModel: ObservableObject {
         deactivateAudioSession()
     }
 
-    func ingest(edgeAngle: Double, at date: Date = Date()) {
+    func ingest(edgeAngle: Double, speedMetersPerSecond: Double, at date: Date = Date()) {
         guard isRunning else { return }
         if let lastSampleTime, date.timeIntervalSince(lastSampleTime) < minSampleInterval {
             return
         }
         lastSampleTime = date
+        latestEdgeAngle = edgeAngle
+        latestSpeedMetersPerSecond = speedMetersPerSecond
         edgeSamples.append(EdgeSample(timestamp: date, angle: edgeAngle))
         pruneSamples()
-        handleEdgeCallout(angle: edgeAngle)
+        handleEdgeCallout(angle: edgeAngle, speedMetersPerSecond: speedMetersPerSecond)
     }
 
     private func pruneSamples() {
@@ -72,19 +84,22 @@ final class RideSessionViewModel: ObservableObject {
         guard timeCalloutsEnabled else { return }
         let calloutCount = Int(elapsed / 30)
         guard calloutCount > lastTimeCalloutCount else { return }
+        guard !speechSynthesizer.isSpeaking else { return }
         lastTimeCalloutCount = calloutCount
         let seconds = calloutCount * 30
         speak("\(seconds) seconds")
     }
 
-    private func handleEdgeCallout(angle: Double) {
-        guard edgeCalloutsEnabled, angle >= edgeThreshold else { return }
+    private func handleEdgeCallout(angle: Double, speedMetersPerSecond: Double) {
+        guard edgeCalloutsEnabled, angle >= edgeCalloutThreshold else { return }
+        guard !speechSynthesizer.isSpeaking else { return }
         let now = Date()
         if let lastCallout = lastEdgeCalloutTime, now.timeIntervalSince(lastCallout) < 5 {
             return
         }
         lastEdgeCalloutTime = now
-        speak("Edge angle \(Int(angle)) degrees")
+        let speedKmh = max(speedMetersPerSecond, 0) * 3.6
+        speak("Edge angle \(Int(angle)) degrees at \(Int(speedKmh)) kilometers per hour")
     }
 
     private func speak(_ text: String) {
