@@ -7,7 +7,6 @@
 
 import Charts
 import CoreLocation
-import SceneKit
 import SwiftUI
 
 struct ContentView: View {
@@ -450,7 +449,7 @@ private struct CalibrationFlowView: View {
                 }
             case .side:
                 VStack(alignment: .leading, spacing: 16) {
-                    Boot3DView(angle: displaySideAngle)
+                    BootTiltView(angle: displaySideAngle)
                         .frame(height: 200)
                         .frame(maxWidth: .infinity)
                         .background(
@@ -534,18 +533,9 @@ private struct CalibrationFlowView: View {
             return
         }
 
-        guard let axis = selectedForwardAxis(pitch: pitch, roll: roll) else {
-            resetForwardHold()
-            return
-        }
-
-        if let candidate = forwardAxisCandidate, candidate != axis {
-            resetForwardTracking()
-            return
-        }
-
-        let axisAngle = axis == .pitch ? pitch : roll
-        let orthogonalAngle = axis == .pitch ? roll : pitch
+        let axis: Axis = .pitch
+        let axisAngle = pitch
+        let orthogonalAngle = roll
         guard abs(orthogonalAngle) <= orthogonalTolerance else {
             resetForwardHold()
             return
@@ -578,9 +568,8 @@ private struct CalibrationFlowView: View {
     }
 
     private func detectSideReference(pitch: Double, roll: Double) {
-        let sideAxis = client.calibrationState.sideAxis
-        let sideAngle = sideAxis == .pitch ? pitch : roll
-        let orthogonalAngle = sideAxis == .pitch ? roll : pitch
+        let sideAngle = roll
+        let orthogonalAngle = pitch
         guard abs(orthogonalAngle) <= orthogonalTolerance else {
             resetSideHold()
             return
@@ -649,13 +638,11 @@ private struct CalibrationFlowView: View {
     }
 
     private var displayForwardAngle: Double {
-        let axis = forwardAxisCandidate ?? (abs(latestPitch) >= abs(latestRoll) ? .pitch : .roll)
-        return axis == .pitch ? latestPitch : latestRoll
+        latestPitch
     }
 
     private var displaySideAngle: Double {
-        let axis = client.calibrationState.sideAxis
-        return axis == .pitch ? latestPitch : latestRoll
+        latestRoll
     }
 
     private var forwardStatusText: String {
@@ -670,18 +657,6 @@ private struct CalibrationFlowView: View {
 
     private var forwardHoldDurationText: String {
         String(format: "%.1f", forwardHoldDuration)
-    }
-
-    private func selectedForwardAxis(pitch: Double, roll: Double) -> Axis? {
-        let pitchCandidate = abs(pitch) >= forwardThreshold && abs(roll) <= orthogonalTolerance
-        let rollCandidate = abs(roll) >= forwardThreshold && abs(pitch) <= orthogonalTolerance
-        if pitchCandidate && !rollCandidate {
-            return .pitch
-        }
-        if rollCandidate && !pitchCandidate {
-            return .roll
-        }
-        return nil
     }
 
     private func resetForwardHold() {
@@ -923,7 +898,7 @@ private struct BootAngleCard: View {
                     .font(.headline.weight(.semibold))
             }
 
-            Boot3DView(angle: tiltAngle)
+            BootTiltView(angle: tiltAngle)
                 .frame(height: 180)
                 .frame(maxWidth: .infinity)
                 .background(
@@ -938,85 +913,39 @@ private struct BootAngleCard: View {
     }
 }
 
-private struct Boot3DView: View {
+private struct BootTiltView: View {
     let angle: Double
 
     var body: some View {
-        BootSceneView(tiltAngle: angle)
-            .padding(.vertical, 8)
-    }
-}
+        ZStack {
+            RoundedRectangle(cornerRadius: 20)
+                .fill(LinearGradient(
+                    colors: [Color.blue.opacity(0.15), Color.purple.opacity(0.1)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                ))
+                .padding(12)
 
-private struct BootSceneView: UIViewRepresentable {
-    let tiltAngle: Double
+            Rectangle()
+                .fill(Color.gray.opacity(0.25))
+                .frame(width: 2, height: 110)
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
+            Capsule()
+                .fill(Color.blue.opacity(0.6))
+                .frame(width: 150, height: 18)
+                .overlay(
+                    Capsule()
+                        .stroke(Color.white.opacity(0.7), lineWidth: 1)
+                )
+                .rotationEffect(.degrees(angle))
+                .shadow(color: .black.opacity(0.15), radius: 4, x: 0, y: 2)
 
-    func makeUIView(context: Context) -> SCNView {
-        let view = SCNView()
-        view.backgroundColor = .clear
-        view.allowsCameraControl = false
-        view.autoenablesDefaultLighting = true
-
-        let scene = SCNScene(named: "boot.usdz") ?? SCNScene()
-        view.scene = scene
-
-        let tiltNode = SCNNode()
-        let bootNode = scene.rootNode.childNodes.first ?? SCNNode()
-        bootNode.removeFromParentNode()
-        bootNode.eulerAngles = SCNVector3Zero
-        normalizeBootNode(bootNode)
-        tiltNode.addChildNode(bootNode)
-        scene.rootNode.addChildNode(tiltNode)
-        context.coordinator.tiltNode = tiltNode
-
-        let cameraNode = SCNNode()
-        cameraNode.camera = SCNCamera()
-        cameraNode.position = SCNVector3(-6, 0, 0)
-        cameraNode.look(at: SCNVector3(0, 0, 0))
-        scene.rootNode.addChildNode(cameraNode)
-
-        let lightNode = SCNNode()
-        lightNode.light = SCNLight()
-        lightNode.light?.type = .directional
-        lightNode.light?.intensity = 900
-        lightNode.eulerAngles = SCNVector3(-0.6, 0.4, 0)
-        scene.rootNode.addChildNode(lightNode)
-
-        return view
-    }
-
-    func updateUIView(_ uiView: SCNView, context: Context) {
-        let tiltRadians = Float(tiltAngle * .pi / 180)
-        context.coordinator.tiltNode?.eulerAngles.z = tiltRadians
-    }
-
-    private func normalizeBootNode(_ bootNode: SCNNode) {
-        let (minBounds, maxBounds) = bootNode.boundingBox
-        let size = SCNVector3(
-            maxBounds.x - minBounds.x,
-            maxBounds.y - minBounds.y,
-            maxBounds.z - minBounds.z
-        )
-        let maxDimension = max(size.x, max(size.y, size.z))
-        guard maxDimension > 0 else { return }
-
-        let center = SCNVector3(
-            (minBounds.x + maxBounds.x) / 2,
-            (minBounds.y + maxBounds.y) / 2,
-            (minBounds.z + maxBounds.z) / 2
-        )
-        bootNode.pivot = SCNMatrix4MakeTranslation(center.x, center.y, center.z)
-
-        let targetSize: Float = 2.4
-        let scale = targetSize / maxDimension
-        bootNode.scale = SCNVector3(scale, scale, scale)
-    }
-
-    final class Coordinator {
-        var tiltNode: SCNNode?
+            Text("\(Int(angle))°")
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .offset(y: 60)
+        }
+        .padding(.vertical, 8)
     }
 }
 

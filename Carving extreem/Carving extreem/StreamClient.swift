@@ -309,7 +309,7 @@ final class StreamClient: NSObject, ObservableObject {
     private func computeEdgeAngles(from sample: SensorSample) -> (signed: Double, magnitude: Double) {
         guard calibrationState.isCalibrated else { return (0, 0) }
         let pitchRoll = pitchRoll(from: sample)
-        let sideAngle = axisAngle(for: calibrationState.sideAxis, pitchRoll: pitchRoll)
+        let sideAngle = pitchRoll.roll
         let aligned = sideAngle - calibrationState.sideReference
         let signed = min(max(aligned, -90), 90)
         let magnitude = min(max(abs(aligned), 0), 90)
@@ -392,7 +392,7 @@ final class StreamClient: NSObject, ObservableObject {
     func captureSideReference() {
         guard let sample = latestSample else { return }
         let pitchRoll = pitchRoll(from: sample)
-        let angle = axisAngle(for: calibrationState.sideAxis, pitchRoll: pitchRoll)
+        let angle = pitchRoll.roll
         var state = calibrationState
         state.sideReference = angle
         state.isCalibrated = true
@@ -411,10 +411,6 @@ final class StreamClient: NSObject, ObservableObject {
         let roll = atan2(oriented.y, oriented.z) * 180 / .pi
         let pitch = atan2(-oriented.x, sqrt(oriented.y * oriented.y + oriented.z * oriented.z)) * 180 / .pi
         return (pitch, roll)
-    }
-
-    private func axisAngle(for axis: Axis, pitchRoll: (pitch: Double, roll: Double)) -> Double {
-        axis == .pitch ? pitchRoll.pitch : pitchRoll.roll
     }
 
     private func leveledAccel(from sample: SensorSample) -> Vector3 {
@@ -437,8 +433,8 @@ final class StreamClient: NSObject, ObservableObject {
     }
 
     private func orientationYawOffset() -> Double {
-        let pitch = calibrationState.forwardPitch
-        let roll = calibrationState.forwardRoll
+        let pitch = calibrationState.forwardPitch * .pi / 180
+        let roll = calibrationState.forwardRoll * .pi / 180
         let magnitude = hypot(pitch, roll)
         guard magnitude > rotationEpsilon else {
             return 0
