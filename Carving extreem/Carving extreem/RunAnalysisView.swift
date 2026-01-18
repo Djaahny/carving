@@ -22,8 +22,8 @@ struct RunAnalysisView: View {
                 .background(Color(.systemBackground))
                 .clipShape(RoundedRectangle(cornerRadius: 16))
 
-            if let selectedSample {
-                turnDetails(for: selectedSample)
+            if let selectedSample, let selectedTurn {
+                turnDetails(for: selectedSample, turn: selectedTurn)
                     .transition(.opacity)
             }
 
@@ -196,7 +196,7 @@ struct RunAnalysisView: View {
         mapPosition = .region(MKCoordinateRegion(center: center, span: span))
     }
 
-    private func turnDetails(for sample: TurnChartSample) -> some View {
+    private func turnDetails(for sample: TurnChartSample, turn: TurnWindow) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Cursor details")
                 .font(.subheadline.weight(.semibold))
@@ -204,6 +204,7 @@ struct RunAnalysisView: View {
                 detailTile(title: "Progress", value: "\(Int(sample.progress))%")
                 detailTile(title: "Edge angle", value: "\(Int(sample.edgeAngle))°")
                 detailTile(title: "Turn signal", value: String(format: "%.2f", sample.turnSignal))
+                detailTile(title: "Turn time", value: formattedTurnDuration(turn))
             }
             Text("Timestamp: \(sample.timestamp.formatted(date: .omitted, time: .standard))")
                 .font(.footnote)
@@ -316,6 +317,11 @@ struct RunAnalysisView: View {
             return String(format: "%.2f km", distance / 1000)
         }
         return String(format: "%.0f m", distance)
+    }
+
+    private func formattedTurnDuration(_ turn: TurnWindow) -> String {
+        let duration = max(turn.endTime.timeIntervalSince(turn.startTime), 0)
+        return formattedDuration(duration)
     }
 }
 
