@@ -72,7 +72,7 @@ struct ContentView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Complete the level, forward, and side calibration before starting a run.")
+            Text("Complete the level and edge alignment calibration before starting a run.")
         }
     }
 
@@ -213,7 +213,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Calibration")
                         .font(.headline)
-                    Text("Level boot + forward/side reference")
+                    Text("Level boot + edge alignment")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -226,10 +226,10 @@ struct ContentView: View {
 
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Forward ref")
+                    Text("Yaw ref")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text("\(client.calibrationState.forwardReference, specifier: "%.1f")°")
+                    Text("\(client.calibrationState.yawReference, specifier: "%.1f")°")
                         .font(.headline)
                 }
                 VStack(alignment: .leading, spacing: 4) {
@@ -304,15 +304,13 @@ struct ContentView: View {
 private struct CalibrationFlowView: View {
     enum Step: Int, CaseIterable {
         case level
-        case forward
         case side
         case complete
 
         var title: String {
             switch self {
             case .level: return "Level the boot"
-            case .forward: return "Tilt forward"
-            case .side: return "Tilt to outside edge"
+            case .side: return "Edge the skis"
             case .complete: return "Calibration saved"
             }
         }
@@ -321,10 +319,8 @@ private struct CalibrationFlowView: View {
             switch self {
             case .level:
                 return "Place the boot flat on the ground and keep it steady. This flat calibration is reused for the next steps, so keep the sensor mounted in its ride position."
-            case .forward:
-                return "Tip the boot to the forward/back angle you want (sensor can face any direction). Hold steady for 1.5s, return to flat, then repeat to average for accuracy."
             case .side:
-                return "Rock the boot side to side up to 45° each way. Hold each side twice, returning to flat between holds, to average out asymmetry."
+                return "Edge the skis 10–20° to each side. This aligns the Y axis (edge rotation) with the boot length. Hold each side steady twice, returning to flat between holds."
             case .complete:
                 return "You're ready to ride with calibrated references."
             }
@@ -333,40 +329,29 @@ private struct CalibrationFlowView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var step: Step = .level
-    @State private var forwardStabilityCount = 0
-    @State private var forwardCapturedAngles: [Double] = []
-    @State private var forwardCapturedPitch: [Double] = []
-    @State private var forwardCapturedRoll: [Double] = []
-    @State private var forwardNeedsReset = false
-    @State private var forwardAxisCandidate: Axis?
-    @State private var forwardAxisLocked: Axis?
     @State private var positiveRollPeaks: [Double] = []
     @State private var negativeRollPeaks: [Double] = []
+    @State private var positiveYawAngles: [Double] = []
+    @State private var negativeYawAngles: [Double] = []
     @State private var currentPositivePeak: Double = 0
     @State private var currentNegativePeak: Double = 0
+    @State private var currentPositiveYaw: Double = 0
+    @State private var currentNegativeYaw: Double = 0
     @State private var sidePositiveCapturedInHold = false
     @State private var sideNegativeCapturedInHold = false
-    @State private var latestPitch: Double = 0
-    @State private var latestRoll: Double = 0
-    @State private var forwardHoldProgress: Double = 0
+    @State private var latestEdgeCalibrationAngle: Double = 0
     @State private var sidePositiveProgress: Double = 0
     @State private var sideNegativeProgress: Double = 0
     @State private var isLevelCalibrating = false
     @State private var levelProgress: Double = 0
     @State private var levelStart: Date?
     @State private var levelSamples: [SensorSample] = []
-    @State private var forwardHoldStart: Date?
     @State private var sidePositiveHoldStart: Date?
     @State private var sideNegativeHoldStart: Date?
     let client: StreamClient
-    private let forwardThreshold = 18.0
-    private let sideThreshold = 12.0
-    private let stabilityTarget = 6
+    private let sideThreshold = 10.0
     private let levelDuration: TimeInterval = 5
-    private let forwardHoldDuration: TimeInterval = 1.5
     private let sideHoldDuration: TimeInterval = 1.0
-    private let forwardFlatTolerance = 6.0
-    private let forwardCaptureTarget = 2
     private let sideCaptureTarget = 2
 
     var body: some View {
@@ -416,7 +401,7 @@ private struct CalibrationFlowView: View {
                     }
                     .buttonStyle(.borderedProminent)
                 }
-            case .forward, .side:
+            case .side:
                 calibrationLiveView
             case .complete:
                 Button("Done") {
@@ -430,29 +415,6 @@ private struct CalibrationFlowView: View {
     private var calibrationLiveView: some View {
         Group {
             switch step {
-            case .forward:
-                VStack(alignment: .leading, spacing: 16) {
-                    BootPitchView(angle: displayForwardAngle)
-                        .frame(height: 200)
-                        .frame(maxWidth: .infinity)
-                        .background(
-                            RoundedRectangle(cornerRadius: 16)
-                                .fill(Color(.systemBackground))
-                                .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 4)
-                        )
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Toe-to-flat calibration")
-                            .font(.subheadline.weight(.semibold))
-                        Text("Current: \(formattedAngle(displayForwardAngle))° • Target: 20–45°")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        ProgressView(value: forwardHoldProgress)
-                        Text(forwardStatusText)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                }
             case .side:
                 VStack(alignment: .leading, spacing: 16) {
                     BootTiltView(angle: displaySideAngle)
@@ -465,9 +427,9 @@ private struct CalibrationFlowView: View {
                         )
 
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Side-to-side calibration")
+                        Text("Edge alignment")
                             .font(.subheadline.weight(.semibold))
-                        Text("Current: \(formattedAngle(displaySideAngle))° • Target: 20–45° each side")
+                        Text("Current: \(formattedAngle(displaySideAngle))° • Target: 10–20° each side")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
 
@@ -504,8 +466,6 @@ private struct CalibrationFlowView: View {
         switch step {
         case .level:
             startLevelCalibration()
-        case .forward:
-            break
         case .side:
             break
         case .complete:
@@ -514,79 +474,25 @@ private struct CalibrationFlowView: View {
     }
 
     private func handleSample(_ sample: SensorSample) {
-        let pitchRoll = client.pitchRoll(from: sample)
-        latestPitch = pitchRoll.pitch
-        latestRoll = pitchRoll.roll
+        latestEdgeCalibrationAngle = client.calibrationEdgeAngle(from: sample)
         switch step {
         case .level:
             handleLevelSample(sample)
-        case .forward:
-            detectForwardReference(pitch: latestPitch, roll: latestRoll)
         case .side:
-            detectSideReference(pitch: latestPitch, roll: latestRoll)
+            detectSideReference(sample: sample, pitch: latestEdgeCalibrationAngle)
         default:
             break
         }
     }
-
-    private func detectForwardReference(pitch: Double, roll: Double) {
-        if forwardNeedsReset {
-            if abs(pitch) <= forwardFlatTolerance, abs(roll) <= forwardFlatTolerance {
-                forwardNeedsReset = false
-                forwardHoldStart = nil
-                forwardHoldProgress = 0
-            }
-            return
-        }
-
-        let axis: Axis = forwardAxisLocked ?? (abs(pitch) >= abs(roll) ? .pitch : .roll)
-        let axisAngle = axis == .pitch ? pitch : roll
-        guard abs(axisAngle) > forwardThreshold else {
-            resetForwardHold()
-            return
-        }
-
-        forwardAxisCandidate = axis
-        forwardStabilityCount += 1
-        let now = Date()
-        if forwardHoldStart == nil {
-            forwardHoldStart = now
-        }
-        guard let holdStart = forwardHoldStart else { return }
-        forwardHoldProgress = min(max(now.timeIntervalSince(holdStart) / forwardHoldDuration, 0), 1)
-        if forwardStabilityCount >= stabilityTarget, now.timeIntervalSince(holdStart) >= forwardHoldDuration {
-            if let lockedAxis = forwardAxisLocked, lockedAxis != axis {
-                resetForwardTracking()
-                forwardNeedsReset = true
-                return
-            }
-            if forwardAxisLocked == nil {
-                forwardAxisLocked = axis
-            }
-            forwardCapturedAngles.append(axisAngle)
-            forwardCapturedPitch.append(pitch)
-            forwardCapturedRoll.append(roll)
-            if forwardCapturedAngles.count < forwardCaptureTarget {
-                forwardNeedsReset = true
-                resetForwardHold()
-                return
-            }
-            let count = Double(forwardCapturedAngles.count)
-            let meanAngle = forwardCapturedAngles.reduce(0, +) / count
-            let meanPitch = forwardCapturedPitch.reduce(0, +) / count
-            let meanRoll = forwardCapturedRoll.reduce(0, +) / count
-            client.captureForwardReference(axis: forwardAxisLocked ?? axis, angle: meanAngle, pitch: meanPitch, roll: meanRoll)
-            resetSideTracking()
-            step = .side
-        }
-    }
-
-    private func detectSideReference(pitch: Double, roll: Double) {
-        let sideAxis = client.calibrationState.sideAxis
-        let sideAngle = sideAxis == .roll ? roll : pitch
+    private func detectSideReference(sample: SensorSample, pitch: Double) {
+        let sideAngle = pitch
+        let yawAngle = client.edgeYawAngle(from: sample)
 
         if sideAngle > sideThreshold {
             currentPositivePeak = max(currentPositivePeak, sideAngle)
+            if sideAngle == currentPositivePeak {
+                currentPositiveYaw = yawAngle
+            }
             if sidePositiveHoldStart == nil {
                 sidePositiveHoldStart = Date()
             }
@@ -598,10 +504,14 @@ private struct CalibrationFlowView: View {
                    positiveRollPeaks.count < sideCaptureTarget {
                     sidePositiveCapturedInHold = true
                     positiveRollPeaks.append(currentPositivePeak)
+                    positiveYawAngles.append(currentPositiveYaw)
                 }
             }
         } else if sideAngle < -sideThreshold {
             currentNegativePeak = min(currentNegativePeak == 0 ? sideAngle : currentNegativePeak, sideAngle)
+            if sideAngle == currentNegativePeak {
+                currentNegativeYaw = yawAngle
+            }
             if sideNegativeHoldStart == nil {
                 sideNegativeHoldStart = Date()
             }
@@ -613,6 +523,7 @@ private struct CalibrationFlowView: View {
                    negativeRollPeaks.count < sideCaptureTarget {
                     sideNegativeCapturedInHold = true
                     negativeRollPeaks.append(currentNegativePeak)
+                    negativeYawAngles.append(currentNegativeYaw)
                 }
             }
         } else {
@@ -623,24 +534,21 @@ private struct CalibrationFlowView: View {
         let positiveAverage = positiveRollPeaks.reduce(0, +) / Double(positiveRollPeaks.count)
         let negativeAverage = negativeRollPeaks.reduce(0, +) / Double(negativeRollPeaks.count)
         let midpoint = (positiveAverage + negativeAverage) / 2
-        client.captureSideReference(angle: midpoint)
+        let yawSamples = positiveYawAngles + negativeYawAngles
+        let yawAverage = yawSamples.reduce(0, +) / Double(max(yawSamples.count, 1))
+        client.captureSideReference(angle: midpoint, yaw: yawAverage)
         step = .complete
     }
 
     private func resetSideTracking() {
-        forwardStabilityCount = 0
-        forwardCapturedAngles = []
-        forwardCapturedPitch = []
-        forwardCapturedRoll = []
-        forwardNeedsReset = false
-        forwardAxisCandidate = nil
-        forwardAxisLocked = nil
-        forwardHoldStart = nil
-        forwardHoldProgress = 0
         positiveRollPeaks = []
         negativeRollPeaks = []
+        positiveYawAngles = []
+        negativeYawAngles = []
         currentPositivePeak = 0
         currentNegativePeak = 0
+        currentPositiveYaw = 0
+        currentNegativeYaw = 0
         sidePositiveCapturedInHold = false
         sideNegativeCapturedInHold = false
         sidePositiveHoldStart = nil
@@ -660,50 +568,8 @@ private struct CalibrationFlowView: View {
         String(format: "%.1f", angle)
     }
 
-    private var displayForwardAngle: Double {
-        let axis = forwardAxisCandidate ?? (abs(latestPitch) >= abs(latestRoll) ? .pitch : .roll)
-        return axis == .pitch ? latestPitch : latestRoll
-    }
-
     private var displaySideAngle: Double {
-        let axis = client.calibrationState.sideAxis
-        return axis == .roll ? latestRoll : latestPitch
-    }
-
-    private var forwardStatusText: String {
-        if forwardNeedsReset {
-            return "Return to flat to confirm."
-        }
-        if forwardCapturedAngles.count == 1 {
-            return forwardHoldProgress >= 1
-                ? "Forward reference confirmed (\(forwardCapturedAngles.count)/\(forwardCaptureTarget))."
-                : "Hold steady again for \(forwardHoldDurationText)s (\(forwardCapturedAngles.count)/\(forwardCaptureTarget))"
-        }
-        return forwardHoldProgress >= 1
-            ? "Forward reference captured (\(forwardCapturedAngles.count)/\(forwardCaptureTarget))."
-            : "Hold steady for \(forwardHoldDurationText)s (\(forwardCapturedAngles.count)/\(forwardCaptureTarget))"
-    }
-
-    private var forwardHoldDurationText: String {
-        String(format: "%.1f", forwardHoldDuration)
-    }
-
-    private func resetForwardHold() {
-        forwardStabilityCount = 0
-        forwardHoldStart = nil
-        forwardHoldProgress = 0
-    }
-
-    private func resetForwardTracking() {
-        forwardStabilityCount = 0
-        forwardCapturedAngles = []
-        forwardCapturedPitch = []
-        forwardCapturedRoll = []
-        forwardNeedsReset = false
-        forwardAxisCandidate = nil
-        forwardAxisLocked = nil
-        forwardHoldStart = nil
-        forwardHoldProgress = 0
+        latestEdgeCalibrationAngle
     }
 
     private func resetSideHold() {
@@ -711,6 +577,8 @@ private struct CalibrationFlowView: View {
         sideNegativeHoldStart = nil
         currentPositivePeak = 0
         currentNegativePeak = 0
+        currentPositiveYaw = 0
+        currentNegativeYaw = 0
         sidePositiveCapturedInHold = false
         sideNegativeCapturedInHold = false
         if !sawPositiveRoll {
@@ -730,7 +598,7 @@ private struct CalibrationFlowView: View {
         client.captureZeroCalibration(samples: levelSamples)
         isLevelCalibrating = false
         resetSideTracking()
-        step = .forward
+        step = .side
     }
 
     private var sawPositiveRoll: Bool {

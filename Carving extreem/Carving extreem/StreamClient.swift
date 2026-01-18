@@ -29,6 +29,7 @@ struct CalibrationState: Codable, Equatable {
     var accelOffset: [Double]
     var gyroOffset: [Double]
     var forwardReference: Double
+    var yawReference: Double
     var sideReference: Double
     var forwardAxis: Axis
     var sideAxis: Axis
@@ -40,6 +41,7 @@ struct CalibrationState: Codable, Equatable {
         accelOffset: [0, 0, 0],
         gyroOffset: [0, 0, 0],
         forwardReference: 0,
+        yawReference: 0,
         sideReference: 0,
         forwardAxis: .pitch,
         sideAxis: .roll,
@@ -52,6 +54,7 @@ struct CalibrationState: Codable, Equatable {
         case accelOffset
         case gyroOffset
         case forwardReference
+        case yawReference
         case sideReference
         case forwardAxis
         case sideAxis
@@ -64,6 +67,7 @@ struct CalibrationState: Codable, Equatable {
         accelOffset: [Double],
         gyroOffset: [Double],
         forwardReference: Double,
+        yawReference: Double,
         sideReference: Double,
         forwardAxis: Axis,
         sideAxis: Axis,
@@ -74,6 +78,7 @@ struct CalibrationState: Codable, Equatable {
         self.accelOffset = accelOffset
         self.gyroOffset = gyroOffset
         self.forwardReference = forwardReference
+        self.yawReference = yawReference
         self.sideReference = sideReference
         self.forwardAxis = forwardAxis
         self.sideAxis = sideAxis
@@ -87,6 +92,7 @@ struct CalibrationState: Codable, Equatable {
         accelOffset = try container.decodeIfPresent([Double].self, forKey: .accelOffset) ?? [0, 0, 0]
         gyroOffset = try container.decodeIfPresent([Double].self, forKey: .gyroOffset) ?? [0, 0, 0]
         forwardReference = try container.decodeIfPresent(Double.self, forKey: .forwardReference) ?? 0
+        yawReference = try container.decodeIfPresent(Double.self, forKey: .yawReference) ?? 0
         sideReference = try container.decodeIfPresent(Double.self, forKey: .sideReference) ?? 0
         forwardAxis = try container.decodeIfPresent(Axis.self, forKey: .forwardAxis) ?? .pitch
         sideAxis = try container.decodeIfPresent(Axis.self, forKey: .sideAxis) ?? .roll
@@ -309,7 +315,7 @@ final class StreamClient: NSObject, ObservableObject {
     private func computeEdgeAngles(from sample: SensorSample) -> (signed: Double, magnitude: Double) {
         guard calibrationState.isCalibrated else { return (0, 0) }
         let pitchRoll = pitchRoll(from: sample)
-        let sideAngle = pitchRoll.roll
+        let sideAngle = pitchRoll.pitch
         let aligned = sideAngle - calibrationState.sideReference
         let signed = min(max(aligned, -90), 90)
         let magnitude = min(max(abs(aligned), 0), 90)
@@ -343,6 +349,7 @@ final class StreamClient: NSObject, ObservableObject {
         state.accelOffset = [sample.ax, sample.ay, sample.az]
         state.gyroOffset = [sample.gx, sample.gy, sample.gz]
         state.forwardReference = 0
+        state.yawReference = 0
         state.sideReference = 0
         state.forwardAxis = .pitch
         state.sideAxis = .roll
@@ -369,6 +376,7 @@ final class StreamClient: NSObject, ObservableObject {
         state.accelOffset = [totalAccel.x / count, totalAccel.y / count, totalAccel.z / count]
         state.gyroOffset = [totalGyro.x / count, totalGyro.y / count, totalGyro.z / count]
         state.forwardReference = 0
+        state.yawReference = 0
         state.sideReference = 0
         state.forwardAxis = .pitch
         state.sideAxis = .roll
@@ -392,7 +400,7 @@ final class StreamClient: NSObject, ObservableObject {
     func captureSideReference() {
         guard let sample = latestSample else { return }
         let pitchRoll = pitchRoll(from: sample)
-        let angle = pitchRoll.roll
+        let angle = pitchRoll.pitch
         var state = calibrationState
         state.sideReference = angle
         state.isCalibrated = true
@@ -402,6 +410,14 @@ final class StreamClient: NSObject, ObservableObject {
     func captureSideReference(angle: Double) {
         var state = calibrationState
         state.sideReference = angle
+        state.isCalibrated = true
+        saveCalibration(state)
+    }
+
+    func captureSideReference(angle: Double, yaw: Double) {
+        var state = calibrationState
+        state.sideReference = angle
+        state.yawReference = yaw
         state.isCalibrated = true
         saveCalibration(state)
     }
@@ -433,15 +449,35 @@ final class StreamClient: NSObject, ObservableObject {
     }
 
     private func orientationYawOffset() -> Double {
-        let pitch = calibrationState.forwardPitch * .pi / 180
-        let roll = calibrationState.forwardRoll * .pi / 180
-        let magnitude = hypot(pitch, roll)
-        guard magnitude > rotationEpsilon else {
+        let yawRadians = calibrationState.yawReference * .pi / 180
+        guard abs(yawRadians) > rotationEpsilon else {
             return 0
         }
-        let measuredAngle = atan2(roll, pitch)
-        let desiredAngle = calibrationState.forwardAxis == .pitch ? 0 : Double.pi / 2
-        return measuredAngle - desiredAngle
+        return yawRadians
+    }
+
+    func edgeYawAngle(from sample: SensorSample) -> Double {
+        let leveled = leveledAccel(from: sample)
+        let angle = atan2(leveled.y, leveled.x) * radiansToDegrees
+        return normalizedYawAngle(angle)
+    }
+
+    func calibrationEdgeAngle(from sample: SensorSample) -> Double {
+        let leveled = leveledAccel(from: sample)
+        let yawAngle = normalizedYawAngle(atan2(leveled.y, leveled.x) * radiansToDegrees) * .pi / 180
+        let aligned = rotateAroundZ(leveled, angle: -yawAngle)
+        let pitch = atan2(-aligned.x, sqrt(aligned.y * aligned.y + aligned.z * aligned.z)) * radiansToDegrees
+        return pitch
+    }
+
+    private func normalizedYawAngle(_ angle: Double) -> Double {
+        var normalized = angle
+        if normalized > 90 {
+            normalized -= 180
+        } else if normalized < -90 {
+            normalized += 180
+        }
+        return normalized
     }
 
     private func rotateVector(_ vector: Vector3, aligning flatReference: Vector3) -> Vector3 {
