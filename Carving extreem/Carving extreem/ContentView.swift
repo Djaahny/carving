@@ -44,7 +44,7 @@ struct ContentView: View {
             }
         }
         .onReceive(client.$latestEdgeAngle) { angle in
-            guard client.latestSample != nil else { return }
+            guard session.isRunning, client.latestSample != nil else { return }
             session.ingest(edgeAngle: angle)
         }
         .onChange(of: session.isRunning) { _, isRunning in
@@ -778,7 +778,7 @@ private struct RunSessionView: View {
 
 private struct BootAngleCard: View {
     let angle: Double
-    let accelSamples: [AccelSample]
+    let tiltAngle: Double
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -795,7 +795,7 @@ private struct BootAngleCard: View {
                     .font(.headline.weight(.semibold))
             }
 
-            Boot3DView(angle: angle)
+            Boot3DView(angle: tiltAngle)
                 .frame(height: 180)
                 .frame(maxWidth: .infinity)
                 .background(
@@ -803,33 +803,6 @@ private struct BootAngleCard: View {
                         .fill(Color(.systemBackground))
                         .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 4)
                 )
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Calibrated G-force (X / Y / Z)")
-                    .font(.subheadline.weight(.semibold))
-                Chart(accelSamples) { sample in
-                    LineMark(
-                        x: .value("Time", sample.timestamp),
-                        y: .value("G", sample.x)
-                    )
-                    .foregroundStyle(.red)
-                    .interpolationMethod(.catmullRom)
-                    LineMark(
-                        x: .value("Time", sample.timestamp),
-                        y: .value("G", sample.y)
-                    )
-                    .foregroundStyle(.green)
-                    .interpolationMethod(.catmullRom)
-                    LineMark(
-                        x: .value("Time", sample.timestamp),
-                        y: .value("G", sample.z)
-                    )
-                    .foregroundStyle(.blue)
-                    .interpolationMethod(.catmullRom)
-                }
-                .chartYScale(domain: -4...4)
-                .frame(height: 160)
-            }
         }
         .padding()
         .background(Color(.secondarySystemBackground))
@@ -929,6 +902,6 @@ private struct BootPitchView: View {
 
 private extension ContentView {
     var bootAngleCard: some View {
-        BootAngleCard(angle: client.latestEdgeAngle, accelSamples: client.accelSamples)
+        BootAngleCard(angle: client.latestEdgeAngle, tiltAngle: client.latestSignedEdgeAngle)
     }
 }
