@@ -12,10 +12,32 @@ struct SensorSample: Equatable {
 }
 
 struct EdgeSample: Identifiable, Codable {
-    let id = UUID()
+    var id: UUID
     let timestamp: Date
     let angle: Double
     let side: SensorSide
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case timestamp
+        case angle
+        case side
+    }
+
+    init(id: UUID = UUID(), timestamp: Date, angle: Double, side: SensorSide) {
+        self.id = id
+        self.timestamp = timestamp
+        self.angle = angle
+        self.side = side
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        timestamp = try container.decode(Date.self, forKey: .timestamp)
+        angle = try container.decode(Double.self, forKey: .angle)
+        side = try container.decode(SensorSide.self, forKey: .side)
+    }
 }
 
 struct CalibratedAccel: Equatable {
