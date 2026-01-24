@@ -109,7 +109,7 @@ struct ContentView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Complete the level and edge alignment calibration before starting a run.")
+            Text("Complete the boot calibration before starting a run.")
         }
         .environmentObject(metricStore)
     }
@@ -317,7 +317,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Calibration")
                         .font(.headline)
-                    Text("Level boot + edge alignment")
+                    Text("3D boot alignment")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -363,21 +363,28 @@ struct ContentView: View {
                 .font(.subheadline.weight(.semibold))
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Yaw ref")
+                    Text("Accel scale")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text("\(client.calibrationState.yawReference, specifier: "%.1f")°")
+                    Text("\(client.calibrationState.accelScale, specifier: "%.3f")")
                         .font(.headline)
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Side ref")
+                    Text("Gyro bias")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text("\(client.calibrationState.sideReference, specifier: "%.1f")°")
+                    Text(
+                        String(
+                            format: "%.2f / %.2f / %.2f",
+                            client.calibrationState.gyroBias[0],
+                            client.calibrationState.gyroBias[1],
+                            client.calibrationState.gyroBias[2]
+                        )
+                    )
                         .font(.headline)
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Zeroed")
+                    Text("Calibrated")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Text(client.calibrationState.isCalibrated ? "Complete" : "Needed")
@@ -386,15 +393,15 @@ struct ContentView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Flat axis (X / Y / Z)")
+                Text("Boot up axis (sensor)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text(
                     String(
-                        format: "%.2f g / %.2f g / %.2f g",
-                        client.calibrationState.accelOffset[0],
-                        client.calibrationState.accelOffset[1],
-                        client.calibrationState.accelOffset[2]
+                        format: "%.2f / %.2f / %.2f",
+                        client.calibrationState.zAxis[0],
+                        client.calibrationState.zAxis[1],
+                        client.calibrationState.zAxis[2]
                     )
                 )
                 .font(.subheadline.weight(.medium))
@@ -549,57 +556,45 @@ private struct CalibrationTarget: Identifiable {
 
 private struct CalibrationFlowView: View {
     enum Step: Int, CaseIterable {
-        case level
-        case side
+        case stationary
+        case forward
         case complete
 
         var title: String {
             switch self {
-            case .level: return "Level the boot"
-            case .side: return "Edge the skis"
+            case .stationary: return "Stand still"
+            case .forward: return "Glide straight"
             case .complete: return "Calibration saved"
             }
         }
 
         var message: String {
             switch self {
-            case .level:
-                return "Place the boot flat on the ground and keep it steady. This flat calibration is reused for the next steps, so keep the sensor mounted in its ride position."
-            case .side:
-                return "Edge the skis 10–20° to each side. This aligns the Y axis (edge rotation) with the boot length. Hold each side steady twice, returning to flat between holds."
+            case .stationary:
+                return "Stand still for about 2 seconds. Small sways are ok, but try to keep the boot steady so we can learn gravity and gyro bias."
+            case .forward:
+                return "Glide straight for 2–3 seconds. We’ll capture a forward direction that tolerates small wobbles and twitchy movement."
             case .complete:
-                return "You're ready to ride with calibrated references."
+                return "You're ready to ride with calibrated boot axes."
             }
         }
     }
 
     @Environment(\.dismiss) private var dismiss
-    @State private var step: Step = .level
-    @State private var positiveRollPeaks: [Double] = []
-    @State private var negativeRollPeaks: [Double] = []
-    @State private var positiveYawAngles: [Double] = []
-    @State private var negativeYawAngles: [Double] = []
-    @State private var currentPositivePeak: Double = 0
-    @State private var currentNegativePeak: Double = 0
-    @State private var currentPositiveYaw: Double = 0
-    @State private var currentNegativeYaw: Double = 0
-    @State private var sidePositiveCapturedInHold = false
-    @State private var sideNegativeCapturedInHold = false
-    @State private var latestEdgeCalibrationAngle: Double = 0
-    @State private var sidePositiveProgress: Double = 0
-    @State private var sideNegativeProgress: Double = 0
-    @State private var isLevelCalibrating = false
-    @State private var levelProgress: Double = 0
-    @State private var levelStart: Date?
-    @State private var levelSamples: [SensorSample] = []
-    @State private var sidePositiveHoldStart: Date?
-    @State private var sideNegativeHoldStart: Date?
+    @State private var step: Step = .stationary
+    @State private var isStationaryCapturing = false
+    @State private var stationaryProgress: Double = 0
+    @State private var stationaryStart: Date?
+    @State private var stationarySamples: [SensorSample] = []
+    @State private var isForwardCapturing = false
+    @State private var forwardProgress: Double = 0
+    @State private var forwardStart: Date?
+    @State private var forwardSamples: [SensorSample] = []
+    @State private var calibrationError: String?
     let client: StreamClient
     let sensorLabel: String
-    private let sideThreshold = 10.0
-    private let levelDuration: TimeInterval = 5
-    private let sideHoldDuration: TimeInterval = 1.0
-    private let sideCaptureTarget = 2
+    private let stationaryDuration: TimeInterval = 2.0
+    private let forwardDuration: TimeInterval = 2.5
 
     var body: some View {
         NavigationStack {
@@ -629,27 +624,44 @@ private struct CalibrationFlowView: View {
             guard let sample else { return }
             handleSample(sample)
         }
+        .alert("Calibration failed", isPresented: Binding(get: { calibrationError != nil }, set: { _ in calibrationError = nil })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(calibrationError ?? "Unknown error")
+        }
     }
 
     private var calibrationActionView: some View {
         Group {
             switch step {
-            case .level:
-                if isLevelCalibrating {
+            case .stationary:
+                if isStationaryCapturing {
                     VStack(alignment: .leading, spacing: 12) {
-                        ProgressView(value: levelProgress)
-                        Text("Averaging level position… \(Int(levelProgress * 100))%")
+                        ProgressView(value: stationaryProgress)
+                        Text("Capturing stillness… \(Int(stationaryProgress * 100))%")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Button("Start 5s level capture") {
+                    Button("Start 2s still capture") {
                         handlePrimaryAction()
                     }
                     .buttonStyle(.borderedProminent)
                 }
-            case .side:
-                calibrationLiveView
+            case .forward:
+                if isForwardCapturing {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ProgressView(value: forwardProgress)
+                        Text("Capturing forward glide… \(Int(forwardProgress * 100))%")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Button("Start 3s glide capture") {
+                        handlePrimaryAction()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
             case .complete:
                 Button("Done") {
                     handlePrimaryAction()
@@ -659,213 +671,72 @@ private struct CalibrationFlowView: View {
         }
     }
 
-    private var calibrationLiveView: some View {
-        Group {
-            switch step {
-            case .side:
-                VStack(alignment: .leading, spacing: 16) {
-                    BootTiltView(angle: displaySideAngle)
-                        .frame(height: 200)
-                        .frame(maxWidth: .infinity)
-                        .background(
-                            RoundedRectangle(cornerRadius: 16)
-                                .fill(Color(.systemBackground))
-                                .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 4)
-                        )
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Edge alignment")
-                            .font(.subheadline.weight(.semibold))
-                        Text("Current: \(formattedAngle(displaySideAngle))° • Target: 10–20° each side")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Text("Outside edge")
-                                    .font(.footnote.weight(.medium))
-                                Spacer()
-                                Text(sideCaptureStatusText(for: positiveRollPeaks.count))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            ProgressView(value: sawPositiveRoll ? 1 : sidePositiveProgress)
-
-                            HStack {
-                                Text("Inside edge")
-                                    .font(.footnote.weight(.medium))
-                                Spacer()
-                                Text(sideCaptureStatusText(for: negativeRollPeaks.count))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            ProgressView(value: sawNegativeRoll ? 1 : sideNegativeProgress)
-                        }
-                    }
-                }
-            default:
-                EmptyView()
-            }
-        }
-    }
-
     private func handlePrimaryAction() {
         switch step {
-        case .level:
-            startLevelCalibration()
-        case .side:
-            break
+        case .stationary:
+            startStationaryCalibration()
+        case .forward:
+            startForwardCalibration()
         case .complete:
             dismiss()
         }
     }
 
     private func handleSample(_ sample: SensorSample) {
-        latestEdgeCalibrationAngle = client.calibrationEdgeAngle(from: sample)
         switch step {
-        case .level:
-            handleLevelSample(sample)
-        case .side:
-            detectSideReference(sample: sample, pitch: latestEdgeCalibrationAngle)
+        case .stationary:
+            handleStationarySample(sample)
+        case .forward:
+            handleForwardSample(sample)
         default:
             break
         }
     }
-    private func detectSideReference(sample: SensorSample, pitch: Double) {
-        let sideAngle = pitch
-        let yawAngle = client.edgeYawAngle(from: sample)
 
-        if sideAngle > sideThreshold {
-            currentPositivePeak = max(currentPositivePeak, sideAngle)
-            if sideAngle == currentPositivePeak {
-                currentPositiveYaw = yawAngle
-            }
-            if sidePositiveHoldStart == nil {
-                sidePositiveHoldStart = Date()
-            }
-            if let holdStart = sidePositiveHoldStart {
-                let elapsed = Date().timeIntervalSince(holdStart)
-                sidePositiveProgress = min(max(elapsed / sideHoldDuration, 0), 1)
-                if elapsed >= sideHoldDuration,
-                   !sidePositiveCapturedInHold,
-                   positiveRollPeaks.count < sideCaptureTarget {
-                    sidePositiveCapturedInHold = true
-                    positiveRollPeaks.append(currentPositivePeak)
-                    positiveYawAngles.append(currentPositiveYaw)
-                }
-            }
-        } else if sideAngle < -sideThreshold {
-            currentNegativePeak = min(currentNegativePeak == 0 ? sideAngle : currentNegativePeak, sideAngle)
-            if sideAngle == currentNegativePeak {
-                currentNegativeYaw = yawAngle
-            }
-            if sideNegativeHoldStart == nil {
-                sideNegativeHoldStart = Date()
-            }
-            if let holdStart = sideNegativeHoldStart {
-                let elapsed = Date().timeIntervalSince(holdStart)
-                sideNegativeProgress = min(max(elapsed / sideHoldDuration, 0), 1)
-                if elapsed >= sideHoldDuration,
-                   !sideNegativeCapturedInHold,
-                   negativeRollPeaks.count < sideCaptureTarget {
-                    sideNegativeCapturedInHold = true
-                    negativeRollPeaks.append(currentNegativePeak)
-                    negativeYawAngles.append(currentNegativeYaw)
-                }
-            }
-        } else {
-            resetSideHold()
-        }
-
-        guard sawPositiveRoll, sawNegativeRoll else { return }
-        let positiveAverage = positiveRollPeaks.reduce(0, +) / Double(positiveRollPeaks.count)
-        let negativeAverage = negativeRollPeaks.reduce(0, +) / Double(negativeRollPeaks.count)
-        let midpoint = (positiveAverage + negativeAverage) / 2
-        let yawSamples = positiveYawAngles + negativeYawAngles
-        let yawAverage = yawSamples.reduce(0, +) / Double(max(yawSamples.count, 1))
-        client.captureSideReference(angle: midpoint, yaw: yawAverage)
-        step = .complete
+    private func startStationaryCalibration() {
+        isStationaryCapturing = true
+        stationaryProgress = 0
+        stationarySamples = []
+        stationaryStart = Date()
     }
 
-    private func resetSideTracking() {
-        positiveRollPeaks = []
-        negativeRollPeaks = []
-        positiveYawAngles = []
-        negativeYawAngles = []
-        currentPositivePeak = 0
-        currentNegativePeak = 0
-        currentPositiveYaw = 0
-        currentNegativeYaw = 0
-        sidePositiveCapturedInHold = false
-        sideNegativeCapturedInHold = false
-        sidePositiveHoldStart = nil
-        sideNegativeHoldStart = nil
-        sidePositiveProgress = 0
-        sideNegativeProgress = 0
+    private func startForwardCalibration() {
+        isForwardCapturing = true
+        forwardProgress = 0
+        forwardSamples = []
+        forwardStart = Date()
     }
 
-    private func startLevelCalibration() {
-        isLevelCalibrating = true
-        levelProgress = 0
-        levelSamples = []
-        levelStart = Date()
-    }
-
-    private func formattedAngle(_ angle: Double) -> String {
-        String(format: "%.1f", angle)
-    }
-
-    private var displaySideAngle: Double {
-        latestEdgeCalibrationAngle
-    }
-
-    private func resetSideHold() {
-        sidePositiveHoldStart = nil
-        sideNegativeHoldStart = nil
-        currentPositivePeak = 0
-        currentNegativePeak = 0
-        currentPositiveYaw = 0
-        currentNegativeYaw = 0
-        sidePositiveCapturedInHold = false
-        sideNegativeCapturedInHold = false
-        if !sawPositiveRoll {
-            sidePositiveProgress = 0
-        }
-        if !sawNegativeRoll {
-            sideNegativeProgress = 0
-        }
-    }
-
-    private func handleLevelSample(_ sample: SensorSample) {
-        guard isLevelCalibrating, let start = levelStart else { return }
-        levelSamples.append(sample)
+    private func handleStationarySample(_ sample: SensorSample) {
+        guard isStationaryCapturing, let start = stationaryStart else { return }
+        stationarySamples.append(sample)
         let elapsed = Date().timeIntervalSince(start)
-        levelProgress = min(max(elapsed / levelDuration, 0), 1)
-        guard elapsed >= levelDuration else { return }
-        client.captureZeroCalibration(samples: levelSamples)
-        isLevelCalibrating = false
-        resetSideTracking()
-        step = .side
-    }
-
-    private var sawPositiveRoll: Bool {
-        positiveRollPeaks.count >= sideCaptureTarget
-    }
-
-    private var sawNegativeRoll: Bool {
-        negativeRollPeaks.count >= sideCaptureTarget
-    }
-
-    private func sideCaptureStatusText(for count: Int) -> String {
-        if count >= sideCaptureTarget {
-            return "Captured \(sideCaptureTarget)/\(sideCaptureTarget)"
+        stationaryProgress = min(max(elapsed / stationaryDuration, 0), 1)
+        guard elapsed >= stationaryDuration else { return }
+        let result = client.captureStationaryCalibration(samples: stationarySamples)
+        isStationaryCapturing = false
+        switch result {
+        case .success:
+            step = .forward
+        case .failure(let message):
+            calibrationError = message
         }
-        return String(
-            format: "Hold %.1fs (%d/%d)",
-            sideHoldDuration,
-            count,
-            sideCaptureTarget
-        )
+    }
+
+    private func handleForwardSample(_ sample: SensorSample) {
+        guard isForwardCapturing, let start = forwardStart else { return }
+        forwardSamples.append(sample)
+        let elapsed = Date().timeIntervalSince(start)
+        forwardProgress = min(max(elapsed / forwardDuration, 0), 1)
+        guard elapsed >= forwardDuration else { return }
+        let result = client.captureForwardCalibration(samples: forwardSamples)
+        isForwardCapturing = false
+        switch result {
+        case .success:
+            step = .complete
+        case .failure(let message):
+            calibrationError = message
+        }
     }
 }
 
@@ -933,7 +804,12 @@ private struct RunSessionView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 20))
 
                     if session.isStopped {
-                        RunAnalysisView(run: session.buildRunRecord(runNumber: runStore.runNumber(for: Date())))
+                        RunAnalysisView(
+                            run: session.buildRunRecord(
+                                runNumber: runStore.runNumber(for: Date()),
+                                calibration: runCalibration()
+                            )
+                        )
                     }
                 }
                 .padding()
@@ -1061,7 +937,8 @@ private struct RunSessionView: View {
 
     private func formattedTurnSignal() -> String {
         guard let sample = primaryClient.latestSample else { return "—" }
-        let signal = computeTurnSignal(from: sample)
+        let calibrated = primaryClient.calibratedSample(from: sample)
+        let signal = computeTurnSignal(from: calibrated)
         return String(format: "%.2f", signal)
     }
 
@@ -1127,12 +1004,12 @@ private struct RunSessionView: View {
         let side = resolvedSide(for: client, fallback: fallbackSide)
         let calibratedSample = client.calibratedSample(from: sample)
         session.ingest(
-            sample: sample,
+            sample: calibratedSample,
             edgeAngle: edgeAngle,
             speedMetersPerSecond: speed,
             location: location,
             side: side,
-            rawSample: calibratedSample
+            rawSample: sample
         )
     }
 
@@ -1154,12 +1031,7 @@ private struct RunSessionView: View {
     }
 
     private func computeTurnSignal(from sample: SensorSample) -> Double {
-        let length = sqrt(sample.ax * sample.ax + sample.ay * sample.ay + sample.az * sample.az)
-        guard length > 0 else { return 0 }
-        let gx = sample.ax / length
-        let gy = sample.ay / length
-        let gz = sample.az / length
-        return sample.gx * gx + sample.gy * gy + sample.gz * gz
+        sample.gz
     }
 
     private func statTile(title: String, value: String) -> some View {
@@ -1185,12 +1057,39 @@ private struct RunSessionView: View {
     private func saveRun() {
         do {
             let runNumber = runStore.runNumber(for: Date())
-            let run = session.buildRunRecord(runNumber: runNumber)
+            let run = session.buildRunRecord(runNumber: runNumber, calibration: runCalibration())
             try runStore.save(run: run)
             dismiss()
         } catch {
             saveError = error.localizedDescription
         }
+    }
+
+    private func runCalibration() -> RunCalibration? {
+        switch sensorMode {
+        case .single:
+            let calibration = RunCalibration(single: primaryClient.currentBootCalibration())
+            return calibration.single == nil ? nil : calibration
+        case .dual:
+            let leftCalibration = calibrationFor(identifier: assignmentStore.leftSensorIdentifier)
+            let rightCalibration = calibrationFor(identifier: assignmentStore.rightSensorIdentifier)
+            let calibration = RunCalibration(single: nil, left: leftCalibration, right: rightCalibration)
+            if calibration.left == nil && calibration.right == nil {
+                return nil
+            }
+            return calibration
+        }
+    }
+
+    private func calibrationFor(identifier: String?) -> BootCalibration? {
+        guard let identifier else { return nil }
+        if primaryClient.connectedIdentifier == identifier {
+            return primaryClient.currentBootCalibration()
+        }
+        if secondaryClient?.connectedIdentifier == identifier {
+            return secondaryClient?.currentBootCalibration()
+        }
+        return nil
     }
 }
 
@@ -1377,7 +1276,7 @@ private struct Boot3DView: View {
 private extension ContentView {
     var bootAngleCard: some View {
         let pitchRoll = primaryClient.latestSample.map { primaryClient.pitchRoll(from: $0) }
-        let forwardAngle = pitchRoll?.roll ?? 0
+        let forwardAngle = pitchRoll?.pitch ?? 0
         return BootAngleCard(
             angle: combinedEdgeAngle,
             tiltAngle: combinedSignedEdgeAngle,

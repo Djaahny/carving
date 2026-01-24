@@ -161,6 +161,7 @@ struct RunRecord: Codable, Identifiable {
     let edgeSamples: [EdgeSample]
     let rawSensorSamples: [RawSensorSample]
     let sensorMode: SensorMode
+    let calibration: RunCalibration?
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -173,6 +174,7 @@ struct RunRecord: Codable, Identifiable {
         case edgeSamples
         case rawSensorSamples
         case sensorMode
+        case calibration
     }
 
     init(
@@ -184,7 +186,8 @@ struct RunRecord: Codable, Identifiable {
         locationTrack: [LocationSample],
         edgeSamples: [EdgeSample],
         rawSensorSamples: [RawSensorSample],
-        sensorMode: SensorMode
+        sensorMode: SensorMode,
+        calibration: RunCalibration? = nil
     ) {
         self.id = UUID()
         self.date = date
@@ -196,6 +199,7 @@ struct RunRecord: Codable, Identifiable {
         self.edgeSamples = edgeSamples
         self.rawSensorSamples = rawSensorSamples
         self.sensorMode = sensorMode
+        self.calibration = calibration
     }
 
     init(from decoder: Decoder) throws {
@@ -210,6 +214,7 @@ struct RunRecord: Codable, Identifiable {
         edgeSamples = try container.decodeIfPresent([EdgeSample].self, forKey: .edgeSamples) ?? []
         rawSensorSamples = try container.decodeIfPresent([RawSensorSample].self, forKey: .rawSensorSamples) ?? []
         sensorMode = try container.decodeIfPresent(SensorMode.self, forKey: .sensorMode) ?? .single
+        calibration = try container.decodeIfPresent(RunCalibration.self, forKey: .calibration)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -224,5 +229,12 @@ struct RunRecord: Codable, Identifiable {
         try container.encode(edgeSamples, forKey: .edgeSamples)
         try container.encode(rawSensorSamples, forKey: .rawSensorSamples)
         try container.encode(sensorMode, forKey: .sensorMode)
+        try container.encode(calibration, forKey: .calibration)
     }
+}
+
+struct RunCalibration: Codable, Equatable {
+    var single: BootCalibration?
+    var left: BootCalibration?
+    var right: BootCalibration?
 }

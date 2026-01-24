@@ -49,85 +49,58 @@ struct CalibratedAccel: Equatable {
 }
 
 struct CalibrationState: Codable, Equatable {
-    var accelOffset: [Double]
-    var gyroOffset: [Double]
-    var forwardReference: Double
-    var yawReference: Double
-    var sideReference: Double
-    var forwardAxis: Axis
-    var sideAxis: Axis
-    var forwardPitch: Double
-    var forwardRoll: Double
+    var rotationMatrix: [[Double]]
+    var gyroBias: [Double]
+    var accelScale: Double
+    var zAxis: [Double]
     var isCalibrated: Bool
 
     static let empty = CalibrationState(
-        accelOffset: [0, 0, 0],
-        gyroOffset: [0, 0, 0],
-        forwardReference: 0,
-        yawReference: 0,
-        sideReference: 0,
-        forwardAxis: .pitch,
-        sideAxis: .roll,
-        forwardPitch: 0,
-        forwardRoll: 0,
+        rotationMatrix: [
+            [1, 0, 0],
+            [0, 1, 0],
+            [0, 0, 1]
+        ],
+        gyroBias: [0, 0, 0],
+        accelScale: 1,
+        zAxis: [0, 0, 1],
         isCalibrated: false
     )
 
     private enum CodingKeys: String, CodingKey {
-        case accelOffset
-        case gyroOffset
-        case forwardReference
-        case yawReference
-        case sideReference
-        case forwardAxis
-        case sideAxis
-        case forwardPitch
-        case forwardRoll
+        case rotationMatrix
+        case gyroBias
+        case accelScale
+        case zAxis
         case isCalibrated
     }
 
     init(
-        accelOffset: [Double],
-        gyroOffset: [Double],
-        forwardReference: Double,
-        yawReference: Double,
-        sideReference: Double,
-        forwardAxis: Axis,
-        sideAxis: Axis,
-        forwardPitch: Double,
-        forwardRoll: Double,
+        rotationMatrix: [[Double]],
+        gyroBias: [Double],
+        accelScale: Double,
+        zAxis: [Double],
         isCalibrated: Bool
     ) {
-        self.accelOffset = accelOffset
-        self.gyroOffset = gyroOffset
-        self.forwardReference = forwardReference
-        self.yawReference = yawReference
-        self.sideReference = sideReference
-        self.forwardAxis = forwardAxis
-        self.sideAxis = sideAxis
-        self.forwardPitch = forwardPitch
-        self.forwardRoll = forwardRoll
+        self.rotationMatrix = rotationMatrix
+        self.gyroBias = gyroBias
+        self.accelScale = accelScale
+        self.zAxis = zAxis
         self.isCalibrated = isCalibrated
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        accelOffset = try container.decodeIfPresent([Double].self, forKey: .accelOffset) ?? [0, 0, 0]
-        gyroOffset = try container.decodeIfPresent([Double].self, forKey: .gyroOffset) ?? [0, 0, 0]
-        forwardReference = try container.decodeIfPresent(Double.self, forKey: .forwardReference) ?? 0
-        yawReference = try container.decodeIfPresent(Double.self, forKey: .yawReference) ?? 0
-        sideReference = try container.decodeIfPresent(Double.self, forKey: .sideReference) ?? 0
-        forwardAxis = try container.decodeIfPresent(Axis.self, forKey: .forwardAxis) ?? .pitch
-        sideAxis = try container.decodeIfPresent(Axis.self, forKey: .sideAxis) ?? .roll
-        forwardPitch = try container.decodeIfPresent(Double.self, forKey: .forwardPitch) ?? 0
-        forwardRoll = try container.decodeIfPresent(Double.self, forKey: .forwardRoll) ?? 0
+        rotationMatrix = try container.decodeIfPresent([[Double]].self, forKey: .rotationMatrix) ?? [
+            [1, 0, 0],
+            [0, 1, 0],
+            [0, 0, 1]
+        ]
+        gyroBias = try container.decodeIfPresent([Double].self, forKey: .gyroBias) ?? [0, 0, 0]
+        accelScale = try container.decodeIfPresent(Double.self, forKey: .accelScale) ?? 1
+        zAxis = try container.decodeIfPresent([Double].self, forKey: .zAxis) ?? [0, 0, 1]
         isCalibrated = try container.decodeIfPresent(Bool.self, forKey: .isCalibrated) ?? false
     }
-}
-
-enum Axis: String, Codable {
-    case pitch
-    case roll
 }
 
 private struct Vector3 {
@@ -156,6 +129,37 @@ private struct Vector3 {
             z: lhs.x * rhs.y - lhs.y * rhs.x
         )
     }
+
+    static func + (lhs: Vector3, rhs: Vector3) -> Vector3 {
+        Vector3(x: lhs.x + rhs.x, y: lhs.y + rhs.y, z: lhs.z + rhs.z)
+    }
+
+    static func - (lhs: Vector3, rhs: Vector3) -> Vector3 {
+        Vector3(x: lhs.x - rhs.x, y: lhs.y - rhs.y, z: lhs.z - rhs.z)
+    }
+
+    static func * (lhs: Vector3, rhs: Double) -> Vector3 {
+        Vector3(x: lhs.x * rhs, y: lhs.y * rhs, z: lhs.z * rhs)
+    }
+}
+
+struct BootCalibration: Codable, Equatable {
+    let rotationMatrix: [[Double]]
+    let gyroBias: [Double]
+    let accelScale: Double
+}
+
+private struct PendingCalibration {
+    let zAxis: Vector3
+    let gyroBias: Vector3
+    let accelScale: Double
+    let meanAccel: Vector3
+    let meanGyro: Vector3
+}
+
+enum CalibrationResult {
+    case success
+    case failure(String)
 }
 
 @MainActor
@@ -184,15 +188,18 @@ final class StreamClient: NSObject, ObservableObject {
     private let gravity = 9.80665
     private let radiansToDegrees = 180.0 / Double.pi
     private let edgeAngleSmoothingAlpha = 0.18
-    private let rotationEpsilon = 1e-6
     private let shockThreshold = 2.5
     private let shockCooldown: TimeInterval = 0.8
+    private let rotationEpsilon = 1e-6
+    private let stillnessAccelStdDevThreshold = 0.05
+    private let stillnessGyroStdDevThreshold = 2.0
 
     private var centralManager: CBCentralManager!
     private var peripheral: CBPeripheral?
     private var dataCharacteristic: CBCharacteristic?
     private var smoothedEdgeAngle: Double?
     private var smoothedSignedEdgeAngle: Double?
+    private var pendingStationaryCalibration: PendingCalibration?
 
     init(deviceName: String = "Carving-Extreem", storageSuffix: String) {
         self.deviceName = deviceName
@@ -361,18 +368,17 @@ final class StreamClient: NSObject, ObservableObject {
     }
 
     private func computeEdgeAngles(from sample: SensorSample) -> (signed: Double, magnitude: Double) {
-        guard calibrationState.isCalibrated else { return (0, 0) }
-        let pitchRoll = pitchRoll(from: sample)
-        let sideAngle = pitchRoll.pitch
-        let aligned = sideAngle - calibrationState.sideReference
-        let signed = min(max(aligned, -90), 90)
-        let magnitude = min(max(abs(aligned), 0), 90)
+        guard let accel = bootFrame(from: sample)?.accel else { return (0, 0) }
+        let roll = atan2(accel.y, accel.z) * radiansToDegrees
+        let signed = min(max(roll, -90), 90)
+        let magnitude = min(max(abs(roll), 0), 90)
         return (signed, magnitude)
     }
 
     private func updateCalibratedAccel(from sample: SensorSample) {
-        let leveled = leveledAccel(from: sample)
-        let calibrated = CalibratedAccel(x: leveled.x, y: leveled.y, z: leveled.z)
+        let accel = bootFrame(from: sample)?.accel
+            ?? Vector3(x: sample.ax, y: sample.ay, z: sample.az)
+        let calibrated = CalibratedAccel(x: accel.x, y: accel.y, z: accel.z)
         latestCalibratedAccel = calibrated
     }
 
@@ -391,24 +397,11 @@ final class StreamClient: NSObject, ObservableObject {
         return state
     }
 
-    func captureZeroCalibration() {
-        guard let sample = latestSample else { return }
-        var state = calibrationState
-        state.accelOffset = [sample.ax, sample.ay, sample.az]
-        state.gyroOffset = [sample.gx, sample.gy, sample.gz]
-        state.forwardReference = 0
-        state.yawReference = 0
-        state.sideReference = 0
-        state.forwardAxis = .pitch
-        state.sideAxis = .roll
-        state.forwardPitch = 0
-        state.forwardRoll = 0
-        state.isCalibrated = false
-        saveCalibration(state)
-    }
+    func captureStationaryCalibration(samples: [SensorSample]) -> CalibrationResult {
+        guard !samples.isEmpty else {
+            return .failure("Not enough samples. Try again.")
+        }
 
-    func captureZeroCalibration(samples: [SensorSample]) {
-        guard !samples.isEmpty else { return }
         let count = Double(samples.count)
         let totalAccel = samples.reduce(into: (x: 0.0, y: 0.0, z: 0.0)) { result, sample in
             result.x += sample.ax
@@ -420,182 +413,256 @@ final class StreamClient: NSObject, ObservableObject {
             result.y += sample.gy
             result.z += sample.gz
         }
+        let meanAccel = Vector3(
+            x: totalAccel.x / count,
+            y: totalAccel.y / count,
+            z: totalAccel.z / count
+        )
+        let meanGyro = Vector3(
+            x: totalGyro.x / count,
+            y: totalGyro.y / count,
+            z: totalGyro.z / count
+        )
+        let accelMagnitude = samples.map { sample in
+            sqrt(sample.ax * sample.ax + sample.ay * sample.ay + sample.az * sample.az)
+        }
+        let gyroMagnitude = samples.map { sample in
+            sqrt(sample.gx * sample.gx + sample.gy * sample.gy + sample.gz * sample.gz)
+        }
+        let accelStdDev = standardDeviation(values: accelMagnitude)
+        let gyroStdDev = standardDeviation(values: gyroMagnitude)
+        guard accelStdDev <= stillnessAccelStdDevThreshold, gyroStdDev <= stillnessGyroStdDevThreshold else {
+            return .failure("Too much movement detected. Hold still for 2 seconds and try again.")
+        }
+
+        let accelNorm = meanAccel.length
+        guard accelNorm > rotationEpsilon else {
+            return .failure("Gravity vector was too small. Reposition the boot and try again.")
+        }
+        let accelScale = 1.0 / accelNorm
+        let gHat = meanAccel.normalized
+        let zAxis = Vector3(x: -gHat.x, y: -gHat.y, z: -gHat.z)
+
+        pendingStationaryCalibration = PendingCalibration(
+            zAxis: zAxis,
+            gyroBias: meanGyro,
+            accelScale: accelScale,
+            meanAccel: meanAccel,
+            meanGyro: meanGyro
+        )
+
         var state = calibrationState
-        state.accelOffset = [totalAccel.x / count, totalAccel.y / count, totalAccel.z / count]
-        state.gyroOffset = [totalGyro.x / count, totalGyro.y / count, totalGyro.z / count]
-        state.forwardReference = 0
-        state.yawReference = 0
-        state.sideReference = 0
-        state.forwardAxis = .pitch
-        state.sideAxis = .roll
-        state.forwardPitch = 0
-        state.forwardRoll = 0
+        state.gyroBias = [meanGyro.x, meanGyro.y, meanGyro.z]
+        state.accelScale = accelScale
+        state.zAxis = [zAxis.x, zAxis.y, zAxis.z]
+        state.rotationMatrix = [
+            [1, 0, 0],
+            [0, 1, 0],
+            [0, 0, 1]
+        ]
         state.isCalibrated = false
         saveCalibration(state)
+        return .success
     }
 
-    func captureForwardReference(axis: Axis, angle: Double, pitch: Double, roll: Double) {
-        var state = calibrationState
-        state.forwardReference = angle
-        state.forwardAxis = axis
-        state.sideAxis = axis == .pitch ? .roll : .pitch
-        state.forwardPitch = pitch
-        state.forwardRoll = roll
-        state.isCalibrated = false
-        saveCalibration(state)
-    }
+    func captureForwardCalibration(samples: [SensorSample]) -> CalibrationResult {
+        guard let pending = pendingStationaryCalibration else {
+            return .failure("Please complete the stationary step first.")
+        }
+        guard !samples.isEmpty else {
+            return .failure("Not enough samples collected. Try again.")
+        }
 
-    func captureSideReference() {
-        guard let sample = latestSample else { return }
-        let pitchRoll = pitchRoll(from: sample)
-        let angle = pitchRoll.pitch
+        guard let forwardAxis = estimateForwardAxis(
+            from: samples,
+            zAxis: pending.zAxis,
+            accelScale: pending.accelScale
+        ) else {
+            return .failure("Forward direction was unclear. Glide straight and retry.")
+        }
+
+        let zAxis = pending.zAxis.normalized
+        let xTemp = forwardAxis - zAxis * Vector3.dot(forwardAxis, zAxis)
+        guard xTemp.length > rotationEpsilon else {
+            return .failure("Forward direction was too close to vertical. Try again.")
+        }
+        let xAxis = xTemp.normalized
+        let crossMagnitude = Vector3.cross(zAxis, xAxis).length
+        guard crossMagnitude > 0.1 else {
+            return .failure("Forward axis was too close to gravity. Try again.")
+        }
+        let yAxis = Vector3.cross(zAxis, xAxis).normalized
+        let correctedXAxis = Vector3.cross(yAxis, zAxis)
+
+        let rotationMatrix = [
+            [correctedXAxis.x, correctedXAxis.y, correctedXAxis.z],
+            [yAxis.x, yAxis.y, yAxis.z],
+            [zAxis.x, zAxis.y, zAxis.z]
+        ]
+
+        if let validationFailure = validateCalibration(
+            rotationMatrix: rotationMatrix,
+            accelScale: pending.accelScale,
+            meanAccel: pending.meanAccel,
+            gyroBias: pending.gyroBias
+        ) {
+            return .failure(validationFailure)
+        }
+
         var state = calibrationState
-        state.sideReference = angle
+        state.rotationMatrix = rotationMatrix
+        state.gyroBias = [pending.gyroBias.x, pending.gyroBias.y, pending.gyroBias.z]
+        state.accelScale = pending.accelScale
+        state.zAxis = [zAxis.x, zAxis.y, zAxis.z]
         state.isCalibrated = true
         saveCalibration(state)
-    }
-
-    func captureSideReference(angle: Double) {
-        var state = calibrationState
-        state.sideReference = angle
-        state.isCalibrated = true
-        saveCalibration(state)
-    }
-
-    func captureSideReference(angle: Double, yaw: Double) {
-        var state = calibrationState
-        state.sideReference = angle
-        state.yawReference = yaw
-        state.isCalibrated = true
-        saveCalibration(state)
+        pendingStationaryCalibration = nil
+        return .success
     }
 
     func pitchRoll(from sample: SensorSample) -> (pitch: Double, roll: Double) {
-        let oriented = orientedAccel(from: sample)
-        let roll = atan2(oriented.y, oriented.z) * 180 / .pi
-        let pitch = atan2(-oriented.x, sqrt(oriented.y * oriented.y + oriented.z * oriented.z)) * 180 / .pi
+        let accel = bootFrame(from: sample)?.accel
+            ?? Vector3(x: sample.ax, y: sample.ay, z: sample.az)
+        let roll = atan2(accel.y, accel.z) * radiansToDegrees
+        let pitch = atan2(accel.x, sqrt(accel.y * accel.y + accel.z * accel.z)) * radiansToDegrees
         return (pitch, roll)
     }
 
     func calibratedSample(from sample: SensorSample) -> SensorSample {
-        let oriented = orientedAccel(from: sample)
-        return SensorSample(
-            ax: oriented.x,
-            ay: oriented.y,
-            az: oriented.z,
-            gx: sample.gx - calibrationState.gyroOffset[0],
-            gy: sample.gy - calibrationState.gyroOffset[1],
-            gz: sample.gz - calibrationState.gyroOffset[2]
-        )
-    }
-
-    private func leveledAccel(from sample: SensorSample) -> Vector3 {
-        let raw = Vector3(x: sample.ax, y: sample.ay, z: sample.az)
-        let flat = Vector3(
-            x: calibrationState.accelOffset[0],
-            y: calibrationState.accelOffset[1],
-            z: calibrationState.accelOffset[2]
-        )
-        return rotateVector(raw, aligning: flat)
-    }
-
-    private func orientedAccel(from sample: SensorSample) -> Vector3 {
-        let leveled = leveledAccel(from: sample)
-        let yawOffset = orientationYawOffset()
-        if abs(yawOffset) < rotationEpsilon {
-            return leveled
+        if let bootFrame = bootFrame(from: sample) {
+            return SensorSample(
+                ax: bootFrame.accel.x,
+                ay: bootFrame.accel.y,
+                az: bootFrame.accel.z,
+                gx: bootFrame.gyro.x,
+                gy: bootFrame.gyro.y,
+                gz: bootFrame.gyro.z
+            )
         }
-        return rotateAroundZ(leveled, angle: -yawOffset)
+        return sample
     }
 
-    private func orientationYawOffset() -> Double {
-        let yawRadians = calibrationState.yawReference * .pi / 180
-        guard abs(yawRadians) > rotationEpsilon else {
-            return 0
-        }
-        return yawRadians
-    }
-
-    func edgeYawAngle(from sample: SensorSample) -> Double {
-        let leveled = leveledAccel(from: sample)
-        let angle = atan2(leveled.y, leveled.x) * radiansToDegrees
-        return normalizedYawAngle(angle)
-    }
-
-    func calibrationEdgeAngle(from sample: SensorSample) -> Double {
-        let leveled = leveledAccel(from: sample)
-        let yawAngle = normalizedYawAngle(atan2(leveled.y, leveled.x) * radiansToDegrees) * .pi / 180
-        let aligned = rotateAroundZ(leveled, angle: -yawAngle)
-        let pitch = atan2(-aligned.x, sqrt(aligned.y * aligned.y + aligned.z * aligned.z)) * radiansToDegrees
-        return pitch
-    }
-
-    private func normalizedYawAngle(_ angle: Double) -> Double {
-        var normalized = angle
-        if normalized > 90 {
-            normalized -= 180
-        } else if normalized < -90 {
-            normalized += 180
-        }
-        return normalized
-    }
-
-    private func rotateVector(_ vector: Vector3, aligning flatReference: Vector3) -> Vector3 {
-        let flatLength = flatReference.length
-        guard flatLength > rotationEpsilon else {
-            return vector
-        }
-        let from = flatReference.normalized
-        let to = Vector3(x: 0, y: 0, z: 1)
-        let dotValue = max(min(Vector3.dot(from, to), 1), -1)
-        let angle = acos(dotValue)
-        if angle < rotationEpsilon {
-            return vector
-        }
-        let axis = Vector3.cross(from, to)
-        let axisLength = axis.length
-        guard axisLength > rotationEpsilon else {
-            return Vector3(x: -vector.x, y: -vector.y, z: -vector.z)
-        }
-        let normalizedAxis = axis.normalized
-        return rotate(vector, axis: normalizedAxis, angle: angle)
-    }
-
-    private func rotate(_ vector: Vector3, axis: Vector3, angle: Double) -> Vector3 {
-        let cosAngle = cos(angle)
-        let sinAngle = sin(angle)
-        let term1 = Vector3(
-            x: vector.x * cosAngle,
-            y: vector.y * cosAngle,
-            z: vector.z * cosAngle
-        )
-        let cross = Vector3.cross(axis, vector)
-        let term2 = Vector3(
-            x: cross.x * sinAngle,
-            y: cross.y * sinAngle,
-            z: cross.z * sinAngle
-        )
-        let dot = Vector3.dot(axis, vector)
-        let term3 = Vector3(
-            x: axis.x * dot * (1 - cosAngle),
-            y: axis.y * dot * (1 - cosAngle),
-            z: axis.z * dot * (1 - cosAngle)
-        )
-        return Vector3(
-            x: term1.x + term2.x + term3.x,
-            y: term1.y + term2.y + term3.y,
-            z: term1.z + term2.z + term3.z
+    func currentBootCalibration() -> BootCalibration? {
+        guard calibrationState.isCalibrated else { return nil }
+        return BootCalibration(
+            rotationMatrix: calibrationState.rotationMatrix,
+            gyroBias: calibrationState.gyroBias,
+            accelScale: calibrationState.accelScale
         )
     }
 
-    private func rotateAroundZ(_ vector: Vector3, angle: Double) -> Vector3 {
-        let cosAngle = cos(angle)
-        let sinAngle = sin(angle)
-        return Vector3(
-            x: vector.x * cosAngle - vector.y * sinAngle,
-            y: vector.x * sinAngle + vector.y * cosAngle,
-            z: vector.z
+    private func bootFrame(from sample: SensorSample) -> (accel: Vector3, gyro: Vector3)? {
+        guard calibrationState.isCalibrated else { return nil }
+        let matrix = normalizedRotationMatrix(calibrationState.rotationMatrix)
+        let accelScaled = Vector3(
+            x: sample.ax * calibrationState.accelScale,
+            y: sample.ay * calibrationState.accelScale,
+            z: sample.az * calibrationState.accelScale
         )
+        let gyroUnbiased = Vector3(
+            x: sample.gx - calibrationState.gyroBias[0],
+            y: sample.gy - calibrationState.gyroBias[1],
+            z: sample.gz - calibrationState.gyroBias[2]
+        )
+        let accelBoot = applyRotation(matrix, to: accelScaled)
+        let gyroBoot = applyRotation(matrix, to: gyroUnbiased)
+        return (accelBoot, gyroBoot)
+    }
+
+    private func normalizedRotationMatrix(_ matrix: [[Double]]) -> [[Double]] {
+        guard matrix.count == 3,
+              matrix.allSatisfy({ $0.count == 3 }) else {
+            return [
+                [1, 0, 0],
+                [0, 1, 0],
+                [0, 0, 1]
+            ]
+        }
+        return matrix
+    }
+
+    private func applyRotation(_ matrix: [[Double]], to vector: Vector3) -> Vector3 {
+        Vector3(
+            x: matrix[0][0] * vector.x + matrix[0][1] * vector.y + matrix[0][2] * vector.z,
+            y: matrix[1][0] * vector.x + matrix[1][1] * vector.y + matrix[1][2] * vector.z,
+            z: matrix[2][0] * vector.x + matrix[2][1] * vector.y + matrix[2][2] * vector.z
+        )
+    }
+
+    private func standardDeviation(values: [Double]) -> Double {
+        guard !values.isEmpty else { return 0 }
+        let mean = values.reduce(0, +) / Double(values.count)
+        let variance = values.reduce(0) { $0 + pow($1 - mean, 2) } / Double(values.count)
+        return sqrt(variance)
+    }
+
+    private func estimateForwardAxis(
+        from samples: [SensorSample],
+        zAxis: Vector3,
+        accelScale: Double
+    ) -> Vector3? {
+        let gHat = Vector3(x: -zAxis.x, y: -zAxis.y, z: -zAxis.z)
+        var covariance = Array(repeating: Array(repeating: 0.0, count: 3), count: 3)
+        var sampleCount = 0
+
+        for sample in samples {
+            let accel = Vector3(x: sample.ax, y: sample.ay, z: sample.az)
+            let scaled = Vector3(
+                x: accel.x * accelScale,
+                y: accel.y * accelScale,
+                z: accel.z * accelScale
+            )
+            let linear = scaled - gHat
+            let projection = linear - zAxis * Vector3.dot(linear, zAxis)
+            guard projection.length > rotationEpsilon else { continue }
+            sampleCount += 1
+            covariance[0][0] += projection.x * projection.x
+            covariance[0][1] += projection.x * projection.y
+            covariance[0][2] += projection.x * projection.z
+            covariance[1][0] += projection.y * projection.x
+            covariance[1][1] += projection.y * projection.y
+            covariance[1][2] += projection.y * projection.z
+            covariance[2][0] += projection.z * projection.x
+            covariance[2][1] += projection.z * projection.y
+            covariance[2][2] += projection.z * projection.z
+        }
+
+        guard sampleCount >= 5 else { return nil }
+        var vector = Vector3(x: 1, y: 0, z: 0)
+        for _ in 0..<10 {
+            let next = Vector3(
+                x: covariance[0][0] * vector.x + covariance[0][1] * vector.y + covariance[0][2] * vector.z,
+                y: covariance[1][0] * vector.x + covariance[1][1] * vector.y + covariance[1][2] * vector.z,
+                z: covariance[2][0] * vector.x + covariance[2][1] * vector.y + covariance[2][2] * vector.z
+            )
+            let nextLength = next.length
+            guard nextLength > rotationEpsilon else { return nil }
+            vector = Vector3(x: next.x / nextLength, y: next.y / nextLength, z: next.z / nextLength)
+        }
+        return vector
+    }
+
+    private func validateCalibration(
+        rotationMatrix: [[Double]],
+        accelScale: Double,
+        meanAccel: Vector3,
+        gyroBias: Vector3
+    ) -> String? {
+        let scaledAccel = Vector3(
+            x: meanAccel.x * accelScale,
+            y: meanAccel.y * accelScale,
+            z: meanAccel.z * accelScale
+        )
+        let accelBoot = applyRotation(rotationMatrix, to: scaledAccel)
+        if abs(accelBoot.z - 1.0) > 0.15 || abs(accelBoot.x) > 0.15 || abs(accelBoot.y) > 0.15 {
+            return "Calibration check failed. Try holding the boot still during step 1."
+        }
+        let gyroBoot = applyRotation(rotationMatrix, to: gyroBias)
+        let gyroMagnitude = gyroBoot.length
+        if gyroMagnitude > 3.0 {
+            return "Gyro bias looks too high. Re-run the stationary step."
+        }
+        return nil
     }
 }
 
