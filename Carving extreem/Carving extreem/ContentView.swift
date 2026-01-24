@@ -422,7 +422,7 @@ struct ContentView: View {
 
     private var sensorMode: SensorMode {
         get { SensorMode(rawValue: sensorModeRaw) ?? .single }
-        set { sensorModeRaw = newValue.rawValue }
+        nonmutating set { sensorModeRaw = newValue.rawValue }
     }
 
     private var primaryClient: StreamClient {
