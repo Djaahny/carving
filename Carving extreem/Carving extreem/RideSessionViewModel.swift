@@ -175,7 +175,7 @@ final class RideSessionViewModel: ObservableObject {
     private func updateTurnDetection(turnSignal: Double, edgeAngle: Double, location: LocationSample?, at date: Date) {
         if isInTurn {
             currentTurnSamples.append(TurnSample(timestamp: date, edgeAngle: edgeAngle, turnSignal: turnSignal))
-            if abs(turnSignal) < turnSettings.turnOffThreshold {
+            if abs(turnSignal) < turnSettings.turnOffThreshold, edgeAngle <= turnSettings.edgeAngleExitThreshold {
                 if turnEndCandidate == nil {
                     turnEndCandidate = date
                 }
@@ -315,6 +315,7 @@ final class RideSessionViewModel: ObservableObject {
 private struct TurnDetectorSettings {
     let turnOnThreshold: Double = 25
     let turnOffThreshold: Double = 15
+    let edgeAngleExitThreshold: Double = 5
     let turnStartHold: TimeInterval = 0.15
     let turnStopHold: TimeInterval = 0.2
     let minTurnDuration: TimeInterval = 0.4
