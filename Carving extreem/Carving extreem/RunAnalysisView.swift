@@ -11,63 +11,65 @@ struct RunAnalysisView: View {
     @State private var mapPosition: MapCameraPosition = .automatic
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            runSummaryCard
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                runSummaryCard
 
-            Text("Turn analysis")
-                .font(.headline)
+                Text("Turn analysis")
+                    .font(.headline)
 
-            turnChart
-                .frame(height: 220)
-                .background(Color(.systemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 16))
+                turnChart
+                    .frame(height: 220)
+                    .background(Color(.systemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
 
-            if let selectedSample, let selectedTurn {
-                turnDetails(for: selectedSample, turn: selectedTurn)
-                    .transition(.opacity)
-            }
+                if let selectedSample, let selectedTurn {
+                    turnDetails(for: selectedSample, turn: selectedTurn)
+                        .transition(.opacity)
+                }
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Turn track")
-                    .font(.subheadline.weight(.semibold))
-                Map(position: $mapPosition) {
-                    if !trackCoordinates.isEmpty {
-                        MapPolyline(coordinates: trackCoordinates)
-                            .stroke(.blue, lineWidth: 3)
-                    }
-                    ForEach(run.turnWindows) { turn in
-                        if let location = turn.location {
-                            Annotation("Turn \(turn.index)", coordinate: CLLocationCoordinate2D(
-                                latitude: location.latitude,
-                                longitude: location.longitude
-                            )) {
-                                Text("\(turn.index)")
-                                    .font(.caption.weight(.bold))
-                                    .foregroundStyle(.white)
-                                    .padding(6)
-                                    .background(Circle().fill(turn.id == selectedTurnID ? Color.orange : Color.blue))
-                                    .onTapGesture {
-                                        selectedTurnID = turn.id
-                                        updateSelectedProgress(for: turn)
-                                    }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Turn track")
+                        .font(.subheadline.weight(.semibold))
+                    Map(position: $mapPosition) {
+                        if !trackCoordinates.isEmpty {
+                            MapPolyline(coordinates: trackCoordinates)
+                                .stroke(.blue, lineWidth: 3)
+                        }
+                        ForEach(run.turnWindows) { turn in
+                            if let location = turn.location {
+                                Annotation("Turn \(turn.index)", coordinate: CLLocationCoordinate2D(
+                                    latitude: location.latitude,
+                                    longitude: location.longitude
+                                )) {
+                                    Text("\(turn.index)")
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(.white)
+                                        .padding(6)
+                                        .background(Circle().fill(turn.id == selectedTurnID ? Color.orange : Color.blue))
+                                        .onTapGesture {
+                                            selectedTurnID = turn.id
+                                            updateSelectedProgress(for: turn)
+                                        }
+                                }
                             }
                         }
                     }
-                }
-                .frame(height: 220)
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-                .onAppear {
-                    updateMapPosition()
-                    if selectedTurnID == nil {
-                        selectedTurnID = run.turnWindows.first?.id
+                    .frame(height: 220)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .onAppear {
+                        updateMapPosition()
+                        if selectedTurnID == nil {
+                            selectedTurnID = run.turnWindows.first?.id
+                        }
+                        updateSelectedProgress(for: selectedTurn)
                     }
-                    updateSelectedProgress(for: selectedTurn)
-                }
-                .onChange(of: run.locationTrack.count) { _, _ in
-                    updateMapPosition()
-                }
-                .onChange(of: selectedTurnID) { _, _ in
-                    updateSelectedProgress(for: selectedTurn)
+                    .onChange(of: run.locationTrack.count) { _, _ in
+                        updateMapPosition()
+                    }
+                    .onChange(of: selectedTurnID) { _, _ in
+                        updateSelectedProgress(for: selectedTurn)
+                    }
                 }
             }
         }
