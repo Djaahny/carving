@@ -8,12 +8,12 @@ final class RunDataStore: ObservableObject {
     private let folderName = "CarvingRuns"
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
-    private static let iso8601Formatter: ISO8601DateFormatter = {
+    nonisolated(unsafe) private static let iso8601Formatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
-    private static let iso8601FallbackFormatter = ISO8601DateFormatter()
+    nonisolated(unsafe) private static let iso8601FallbackFormatter = ISO8601DateFormatter()
 
     init() {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
