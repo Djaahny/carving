@@ -6,17 +6,24 @@
 //
 
 import Charts
+import Combine
 import CoreLocation
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var client = StreamClient()
+    @StateObject private var sensorAClient = StreamClient(storageSuffix: "A")
+    @StateObject private var sensorBClient = StreamClient(storageSuffix: "B")
     @StateObject private var session = RideSessionViewModel()
     @StateObject private var locationManager = RideLocationManager()
     @StateObject private var runStore = RunDataStore()
-    @State private var showCalibration = false
-    @State private var didAutoConnect = false
+    @StateObject private var metricStore = MetricSelectionStore()
+    @StateObject private var assignmentStore = SensorAssignmentStore()
+    @AppStorage("sensorMode") private var sensorModeRaw = SensorMode.single.rawValue
     @State private var showCalibrationRequired = false
+    @State private var showMetricSelection = false
+    @State private var showSensorAssignment = false
+    @State private var calibrationTarget: CalibrationTarget?
+    @State private var didAutoConnect = false
     @State private var showRunSession = false
 
     var body: some View {
@@ -27,6 +34,8 @@ struct ContentView: View {
 
                     bootAngleCard
 
+                    sensorSetupCard
+
                     connectionCard
 
                     runControlCard
@@ -34,18 +43,25 @@ struct ContentView: View {
                     calibrationCard
 
                     openSavedRunsCard
+
+                    metricsCard
                 }
                 .padding()
             }
             .navigationTitle("Carving Extreem")
         }
         .onDisappear {
-            client.disconnect()
+            sensorAClient.disconnect()
+            sensorBClient.disconnect()
         }
         .onAppear {
-            if !didAutoConnect, client.lastKnownSensorName != nil {
-                didAutoConnect = true
-                client.connect()
+            guard !didAutoConnect else { return }
+            didAutoConnect = true
+            if sensorAClient.lastKnownSensorName != nil {
+                sensorAClient.connect()
+            }
+            if sensorMode == .dual, sensorBClient.lastKnownSensorName != nil {
+                sensorBClient.connect()
             }
         }
         .onChange(of: session.isRunning) { _, isRunning in
@@ -55,25 +71,47 @@ struct ContentView: View {
                 locationManager.stopUpdates()
             }
         }
-        .sheet(isPresented: $showCalibration) {
-            CalibrationFlowView(client: client)
+        .onChange(of: sensorMode) { _, newValue in
+            if newValue == .dual, sensorBClient.lastKnownSensorName != nil {
+                sensorBClient.connect()
+            }
+            if newValue == .single {
+                sensorBClient.disconnect()
+            }
+        }
+        .sheet(item: $calibrationTarget) { target in
+            CalibrationFlowView(client: target.client, sensorLabel: target.label)
         }
         .fullScreenCover(isPresented: $showRunSession) {
             RunSessionView(
                 session: session,
-                client: client,
+                primaryClient: primaryClient,
+                secondaryClient: secondaryClient,
+                sensorMode: sensorMode,
+                assignmentStore: assignmentStore,
                 locationManager: locationManager,
                 runStore: runStore
             )
         }
+        .sheet(isPresented: $showMetricSelection) {
+            MetricSelectionView(metricStore: metricStore)
+        }
+        .sheet(isPresented: $showSensorAssignment) {
+            SensorAssignmentView(
+                clientA: sensorAClient,
+                clientB: sensorBClient,
+                assignmentStore: assignmentStore
+            )
+        }
         .alert("Calibration required", isPresented: $showCalibrationRequired) {
             Button("Start calibration") {
-                showCalibration = true
+                openCalibration()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Complete the level and edge alignment calibration before starting a run.")
         }
+        .environmentObject(metricStore)
     }
 
     private var welcomeCard: some View {
@@ -99,9 +137,14 @@ struct ContentView: View {
                             Label("Last sensor", systemImage: "sensor.tag.radiowaves.forward")
                                 .font(.subheadline.weight(.medium))
                                 .foregroundStyle(.white.opacity(0.9))
-                            Text(client.lastKnownSensorName ?? "None saved yet")
-                                .font(.subheadline)
-                                .foregroundStyle(.white)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(sensorLabel(for: sensorAClient))
+                                if sensorMode == .dual {
+                                    Text(sensorLabel(for: sensorBClient))
+                                }
+                            }
+                            .font(.subheadline)
+                            .foregroundStyle(.white)
                         }
                     }
                     .padding(20),
@@ -112,17 +155,34 @@ struct ContentView: View {
 
     private var connectionCard: some View {
         VStack(alignment: .leading, spacing: 12) {
+            Text("Sensor connection")
+                .font(.headline)
+
+            if sensorMode == .dual {
+                sensorConnectionRow(title: "Sensor A", client: sensorAClient)
+                sensorConnectionRow(title: "Sensor B", client: sensorBClient)
+            } else {
+                sensorConnectionRow(title: "Sensor", client: primaryClient)
+            }
+        }
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 20))
+    }
+
+    private func sensorConnectionRow(title: String, client: StreamClient) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Sensor connection")
-                    .font(.headline)
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
                 Spacer()
                 Text(client.isConnected ? "Connected" : "Disconnected")
-                    .font(.subheadline.weight(.medium))
+                    .font(.footnote.weight(.medium))
                     .foregroundStyle(client.isConnected ? .green : .secondary)
             }
 
             Text(client.status)
-                .font(.subheadline)
+                .font(.footnote)
                 .foregroundStyle(.secondary)
 
             HStack(spacing: 12) {
@@ -146,9 +206,6 @@ struct ContentView: View {
                 }
             }
         }
-        .padding()
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 20))
     }
 
     private var runControlCard: some View {
@@ -168,7 +225,9 @@ struct ContentView: View {
 
             Button(session.isRunning ? "Running" : "Start Run") {
                 guard !session.isRunning else { return }
-                if client.calibrationState.isCalibrated {
+                if isCalibratedForRun {
+                    session.sensorMode = sensorMode
+                    session.primarySide = sensorMode == .dual ? .left : .single
                     session.startRun(isCalibrated: true)
                     showRunSession = true
                 } else {
@@ -177,7 +236,7 @@ struct ContentView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(session.isRunning ? .gray : .blue)
-            .disabled(session.isRunning || !client.calibrationState.isCalibrated)
+            .disabled(session.isRunning || !isCalibratedForRun)
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Audio callouts")
@@ -196,10 +255,55 @@ struct ContentView: View {
             }
             .font(.subheadline)
 
-            if !client.calibrationState.isCalibrated {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Recording")
+                    .font(.subheadline.weight(.semibold))
+                Toggle("Record raw sensor data", isOn: $session.rawDataRecordingEnabled)
+            }
+
+            if !isCalibratedForRun {
                 Label("Calibration required before starting a run.", systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(.orange)
+            }
+        }
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 20))
+    }
+
+    private var sensorSetupCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Sensor setup")
+                .font(.headline)
+
+            Picker("Mode", selection: sensorModeBinding) {
+                ForEach(SensorMode.allCases) { mode in
+                    Text(mode == .single ? "Single sensor" : "Dual sensors")
+                        .tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            if sensorMode == .dual {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Assignments")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Left: \(assignedSensorLabel(for: .left))")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text("Right: \(assignedSensorLabel(for: .right))")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("Identify left/right by stamping") {
+                        showSensorAssignment = true
+                    }
+                    .buttonStyle(.bordered)
+                }
+            } else {
+                Text("Use one sensor for live metrics and recording.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding()
@@ -218,12 +322,45 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Start") {
-                    showCalibration = true
+                if sensorMode == .dual {
+                    Button("Assign sensors") {
+                        showSensorAssignment = true
+                    }
+                    .buttonStyle(.bordered)
+                } else {
+                    Button("Start") {
+                        openCalibration()
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
             }
 
+            if sensorMode == .dual {
+                calibrationStatusRow(title: "Left sensor", client: leftClient ?? sensorAClient)
+                calibrationStatusRow(title: "Right sensor", client: rightClient ?? sensorBClient)
+                HStack {
+                    Button("Calibrate left") {
+                        openCalibration(for: .left)
+                    }
+                    .buttonStyle(.bordered)
+                    Button("Calibrate right") {
+                        openCalibration(for: .right)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            } else {
+                calibrationStatusRow(title: "Sensor", client: primaryClient)
+            }
+        }
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 20))
+    }
+
+    private func calibrationStatusRow(title: String, client: StreamClient) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Yaw ref")
@@ -263,15 +400,94 @@ struct ContentView: View {
                 .font(.subheadline.weight(.medium))
             }
         }
-        .padding()
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 20))
     }
 
     private func timeString(from interval: TimeInterval) -> String {
         let minutes = Int(interval) / 60
         let seconds = Int(interval) % 60
         return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    private var sensorModeBinding: Binding<SensorMode> {
+        Binding(
+            get: { sensorMode },
+            set: { newValue in
+                sensorMode = newValue
+                if newValue == .single {
+                    assignmentStore.clear()
+                }
+            }
+        )
+    }
+
+    private var sensorMode: SensorMode {
+        get { SensorMode(rawValue: sensorModeRaw) ?? .single }
+        set { sensorModeRaw = newValue.rawValue }
+    }
+
+    private var primaryClient: StreamClient {
+        if sensorMode == .dual {
+            return leftClient ?? sensorAClient
+        }
+        return sensorAClient
+    }
+
+    private var secondaryClient: StreamClient? {
+        guard sensorMode == .dual else { return nil }
+        let fallback = primaryClient === sensorAClient ? sensorBClient : sensorAClient
+        return rightClient ?? fallback
+    }
+
+    private var leftClient: StreamClient? {
+        guard let identifier = assignmentStore.leftSensorIdentifier else { return nil }
+        return client(for: identifier)
+    }
+
+    private var rightClient: StreamClient? {
+        guard let identifier = assignmentStore.rightSensorIdentifier else { return nil }
+        return client(for: identifier)
+    }
+
+    private func client(for identifier: String) -> StreamClient? {
+        if sensorAClient.connectedIdentifier == identifier { return sensorAClient }
+        if sensorBClient.connectedIdentifier == identifier { return sensorBClient }
+        return nil
+    }
+
+    private var isCalibratedForRun: Bool {
+        if sensorMode == .dual {
+            let leftCalibrated = (leftClient ?? sensorAClient).calibrationState.isCalibrated
+            let rightCalibrated = (rightClient ?? sensorBClient).calibrationState.isCalibrated
+            return leftCalibrated && rightCalibrated
+        }
+        return primaryClient.calibrationState.isCalibrated
+    }
+
+    private func openCalibration() {
+        calibrationTarget = CalibrationTarget(label: "Sensor", client: primaryClient)
+    }
+
+    private func openCalibration(for side: SensorSide) {
+        switch side {
+        case .left:
+            calibrationTarget = CalibrationTarget(label: "Left sensor", client: leftClient ?? sensorAClient)
+        case .right:
+            calibrationTarget = CalibrationTarget(label: "Right sensor", client: rightClient ?? sensorBClient)
+        case .single:
+            calibrationTarget = CalibrationTarget(label: "Sensor", client: primaryClient)
+        }
+    }
+
+    private func sensorLabel(for client: StreamClient) -> String {
+        client.lastKnownSensorName ?? "None saved yet"
+    }
+
+    private func assignedSensorLabel(for side: SensorSide) -> String {
+        let client = side == .left ? leftClient : rightClient
+        if let client {
+            return client.lastKnownSensorName ?? client.connectedIdentifier ?? "Unknown"
+        }
+        return "Unassigned"
     }
 
     private var openSavedRunsCard: some View {
@@ -295,10 +511,40 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
     }
+
+    private var metricsCard: some View {
+        Button {
+            showMetricSelection = true
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Metric visibility")
+                        .font(.headline)
+                    Text("Customize live + recording stats")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "slider.horizontal.3")
+                    .foregroundStyle(.secondary)
+            }
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.secondarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 20))
+        }
+        .buttonStyle(.plain)
+    }
 }
 
 #Preview {
     ContentView()
+}
+
+private struct CalibrationTarget: Identifiable {
+    let id = UUID()
+    let label: String
+    let client: StreamClient
 }
 
 private struct CalibrationFlowView: View {
@@ -349,6 +595,7 @@ private struct CalibrationFlowView: View {
     @State private var sidePositiveHoldStart: Date?
     @State private var sideNegativeHoldStart: Date?
     let client: StreamClient
+    let sensorLabel: String
     private let sideThreshold = 10.0
     private let levelDuration: TimeInterval = 5
     private let sideHoldDuration: TimeInterval = 1.0
@@ -368,7 +615,7 @@ private struct CalibrationFlowView: View {
                 calibrationActionView
             }
             .padding()
-            .navigationTitle("Calibration")
+            .navigationTitle("\(sensorLabel) calibration")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -624,8 +871,12 @@ private struct CalibrationFlowView: View {
 
 private struct RunSessionView: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var metricStore: MetricSelectionStore
     @ObservedObject var session: RideSessionViewModel
-    @ObservedObject var client: StreamClient
+    @ObservedObject var primaryClient: StreamClient
+    let secondaryClient: StreamClient?
+    let sensorMode: SensorMode
+    @ObservedObject var assignmentStore: SensorAssignmentStore
     @ObservedObject var locationManager: RideLocationManager
     @ObservedObject var runStore: RunDataStore
     @State private var saveError: String?
@@ -648,15 +899,21 @@ private struct RunSessionView: View {
                                 .font(.headline.weight(.semibold))
                         }
 
-                        Chart(session.edgeSamples) { sample in
-                            LineMark(x: .value("Time", sample.timestamp), y: .value("Angle", sample.angle))
-                                .interpolationMethod(.catmullRom)
-                            AreaMark(x: .value("Time", sample.timestamp), y: .value("Angle", sample.angle))
-                                .foregroundStyle(.linearGradient(
-                                    colors: [Color.blue.opacity(0.4), Color.blue.opacity(0.05)],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                ))
+                        Chart {
+                            ForEach(edgeSamples(for: .single)) { sample in
+                                LineMark(x: .value("Time", sample.timestamp), y: .value("Angle", sample.angle))
+                                    .interpolationMethod(.catmullRom)
+                            }
+                            ForEach(edgeSamples(for: .left)) { sample in
+                                LineMark(x: .value("Time", sample.timestamp), y: .value("Angle", sample.angle))
+                                    .foregroundStyle(.blue)
+                                    .interpolationMethod(.catmullRom)
+                            }
+                            ForEach(edgeSamples(for: .right)) { sample in
+                                LineMark(x: .value("Time", sample.timestamp), y: .value("Angle", sample.angle))
+                                    .foregroundStyle(.purple)
+                                    .interpolationMethod(.catmullRom)
+                            }
                         }
                         .chartYScale(domain: 0...90)
                         .frame(height: 220)
@@ -709,38 +966,27 @@ private struct RunSessionView: View {
             }
         }
         .interactiveDismissDisabled(session.isRunning)
-            .onReceive(client.$latestEdgeAngle) { angle in
-                guard session.isRunning, let sample = client.latestSample else { return }
-                let speed = max(locationManager.speedMetersPerSecond, 0)
-                let location = locationManager.latestLocation.map { location in
-                    LocationSample(
-                    timestamp: location.timestamp,
-                    latitude: location.coordinate.latitude,
-                    longitude: location.coordinate.longitude,
-                    altitude: location.altitude,
-                    speed: location.speed,
-                    horizontalAccuracy: location.horizontalAccuracy
-                )
-            }
-                session.ingest(
-                    sample: sample,
-                    edgeAngle: angle,
-                    speedMetersPerSecond: speed,
-                    location: location
-                )
-            }
-            .onReceive(locationManager.$latestLocation) { location in
-                guard session.isRunning, let location else { return }
-                let locationSample = LocationSample(
-                    timestamp: location.timestamp,
-                    latitude: location.coordinate.latitude,
-                    longitude: location.coordinate.longitude,
-                    altitude: location.altitude,
-                    speed: location.speed,
-                    horizontalAccuracy: location.horizontalAccuracy
-                )
-                session.ingestLocation(locationSample)
-            }
+        .onReceive(primaryClient.$latestEdgeAngle) { angle in
+            guard session.isRunning, let sample = primaryClient.latestSample else { return }
+            ingestSample(from: primaryClient, sample: sample, edgeAngle: angle, fallbackSide: .left)
+        }
+        .onReceive(secondaryEdgePublisher) { angle in
+            guard let secondaryClient else { return }
+            guard session.isRunning, let sample = secondaryClient.latestSample else { return }
+            ingestSample(from: secondaryClient, sample: sample, edgeAngle: angle, fallbackSide: .right)
+        }
+        .onReceive(locationManager.$latestLocation) { location in
+            guard session.isRunning, let location else { return }
+            let locationSample = LocationSample(
+                timestamp: location.timestamp,
+                latitude: location.coordinate.latitude,
+                longitude: location.coordinate.longitude,
+                altitude: location.altitude,
+                speed: location.speed,
+                horizontalAccuracy: location.horizontalAccuracy
+            )
+            session.ingestLocation(locationSample)
+        }
         .alert("Save failed", isPresented: Binding(get: { saveError != nil }, set: { _ in saveError = nil })) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -749,26 +995,169 @@ private struct RunSessionView: View {
     }
 
     private var runStats: some View {
-        let speed = max(locationManager.speedMetersPerSecond, 0)
-        let speedKmh = speed * 3.6
-        let peakAngle = session.edgeSamples.map(\.angle).max() ?? 0
-        return VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("Live stats")
                 .font(.subheadline.weight(.semibold))
-            HStack(spacing: 16) {
-                statTile(title: "Current edge", value: "\(Int(session.latestEdgeAngle))°")
-                statTile(title: "Peak (10s)", value: "\(Int(peakAngle))°")
-            }
-            HStack(spacing: 16) {
-                statTile(title: "Speed", value: String(format: "%.1f km/h", speedKmh))
-                statTile(title: "Edge alert", value: "\(Int(session.edgeCalloutThreshold))°")
-            }
+            metricsGrid(metrics: metricStore.liveMetrics.sorted { $0.rawValue < $1.rawValue })
             if !locationManager.status.isEmpty {
                 Text(locationManager.status)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func metricsGrid(metrics: [MetricKind]) -> some View {
+        let columns = [GridItem(.flexible()), GridItem(.flexible())]
+        return LazyVGrid(columns: columns, spacing: 12) {
+            ForEach(metrics) { metric in
+                statTile(title: metric.title, value: liveMetricValue(for: metric))
+            }
+        }
+    }
+
+    private func liveMetricValue(for metric: MetricKind) -> String {
+        switch metric {
+        case .liveCurrentEdge:
+            return "\(Int(session.latestEdgeAngle))°"
+        case .liveLeftEdge:
+            return edgeValue(for: .left)
+        case .liveRightEdge:
+            return edgeValue(for: .right)
+        case .livePeakEdge:
+            let peak = session.edgeSamples.map(\.angle).max() ?? 0
+            return "\(Int(peak))°"
+        case .liveEdgeRate:
+            return formattedEdgeRate(samples: session.edgeSamples)
+        case .liveSpeed:
+            return formattedSpeed(max(locationManager.speedMetersPerSecond, 0) * 3.6)
+        case .liveTurnCount:
+            return "\(session.turnCount)"
+        case .liveTurnSignal:
+            return formattedTurnSignal()
+        case .livePitch:
+            return formattedPitchRoll().pitch
+        case .liveRoll:
+            return formattedPitchRoll().roll
+        case .liveAccelG:
+            return formattedAccelMagnitude()
+        case .liveLeftRightDelta:
+            return formattedEdgeDelta()
+        default:
+            return "—"
+        }
+    }
+
+    private func edgeValue(for side: SensorSide) -> String {
+        if let value = session.latestEdgeAnglesBySide[side] {
+            return "\(Int(value))°"
+        }
+        return "—"
+    }
+
+    private func formattedSpeed(_ speed: Double) -> String {
+        String(format: "%.1f km/h", speed)
+    }
+
+    private func formattedTurnSignal() -> String {
+        guard let sample = primaryClient.latestSample else { return "—" }
+        let signal = computeTurnSignal(from: sample)
+        return String(format: "%.2f", signal)
+    }
+
+    private func formattedPitchRoll() -> (pitch: String, roll: String) {
+        guard let sample = primaryClient.latestSample else { return ("—", "—") }
+        let pitchRoll = primaryClient.pitchRoll(from: sample)
+        return ("\(Int(pitchRoll.pitch))°", "\(Int(pitchRoll.roll))°")
+    }
+
+    private func formattedAccelMagnitude() -> String {
+        let magnitude = max(primaryClient.latestAccelMagnitude, secondaryClient?.latestAccelMagnitude ?? 0)
+        return String(format: "%.2f g", magnitude)
+    }
+
+    private func formattedEdgeDelta() -> String {
+        guard sensorMode == .dual else { return "—" }
+        let left = session.latestEdgeAnglesBySide[.left] ?? 0
+        let right = session.latestEdgeAnglesBySide[.right] ?? 0
+        return "\(Int(abs(left - right)))°"
+    }
+
+    private func formattedEdgeRate(samples: [EdgeSample]) -> String {
+        guard samples.count > 1 else { return "—" }
+        let sorted = samples.sorted { $0.timestamp < $1.timestamp }
+        var rates: [Double] = []
+        rates.reserveCapacity(sorted.count - 1)
+        for index in 1..<sorted.count {
+            let deltaAngle = abs(sorted[index].angle - sorted[index - 1].angle)
+            let deltaTime = sorted[index].timestamp.timeIntervalSince(sorted[index - 1].timestamp)
+            if deltaTime > 0 {
+                rates.append(deltaAngle / deltaTime)
+            }
+        }
+        guard let average = rates.isEmpty ? nil : rates.reduce(0, +) / Double(rates.count) else {
+            return "—"
+        }
+        return String(format: "%.1f°/s", average)
+    }
+
+    private func edgeSamples(for side: SensorSide) -> [EdgeSample] {
+        switch side {
+        case .single:
+            return session.edgeSamples.filter { $0.side == .single }
+        case .left:
+            return session.edgeSamples.filter { $0.side == .left }
+        case .right:
+            return session.edgeSamples.filter { $0.side == .right }
+        }
+    }
+
+    private func ingestSample(from client: StreamClient, sample: SensorSample, edgeAngle: Double, fallbackSide: SensorSide) {
+        let speed = max(locationManager.speedMetersPerSecond, 0)
+        let location = locationManager.latestLocation.map { location in
+            LocationSample(
+                timestamp: location.timestamp,
+                latitude: location.coordinate.latitude,
+                longitude: location.coordinate.longitude,
+                altitude: location.altitude,
+                speed: location.speed,
+                horizontalAccuracy: location.horizontalAccuracy
+            )
+        }
+        let side = resolvedSide(for: client, fallback: fallbackSide)
+        session.ingest(
+            sample: sample,
+            edgeAngle: edgeAngle,
+            speedMetersPerSecond: speed,
+            location: location,
+            side: side
+        )
+    }
+
+    private func resolvedSide(for client: StreamClient, fallback: SensorSide) -> SensorSide {
+        if sensorMode == .dual {
+            if let identifier = client.connectedIdentifier, identifier == assignmentStore.leftSensorIdentifier {
+                return .left
+            }
+            if let identifier = client.connectedIdentifier, identifier == assignmentStore.rightSensorIdentifier {
+                return .right
+            }
+            return fallback
+        }
+        return .single
+    }
+
+    private var secondaryEdgePublisher: AnyPublisher<Double, Never> {
+        secondaryClient?.$latestEdgeAngle.eraseToAnyPublisher() ?? Just(0).eraseToAnyPublisher()
+    }
+
+    private func computeTurnSignal(from sample: SensorSample) -> Double {
+        let length = sqrt(sample.ax * sample.ax + sample.ay * sample.ay + sample.az * sample.az)
+        guard length > 0 else { return 0 }
+        let gx = sample.ax / length
+        let gy = sample.ay / length
+        let gz = sample.az / length
+        return sample.gx * gx + sample.gy * gy + sample.gz * gz
     }
 
     private func statTile(title: String, value: String) -> some View {
@@ -985,12 +1374,24 @@ private struct Boot3DView: View {
 
 private extension ContentView {
     var bootAngleCard: some View {
-        let pitchRoll = client.latestSample.map { client.pitchRoll(from: $0) }
+        let pitchRoll = primaryClient.latestSample.map { primaryClient.pitchRoll(from: $0) }
         let forwardAngle = pitchRoll?.roll ?? 0
         return BootAngleCard(
-            angle: client.latestEdgeAngle,
-            tiltAngle: client.latestSignedEdgeAngle,
+            angle: combinedEdgeAngle,
+            tiltAngle: combinedSignedEdgeAngle,
             forwardAngle: forwardAngle
         )
+    }
+
+    var combinedEdgeAngle: Double {
+        let values = [primaryClient.latestEdgeAngle, secondaryClient?.latestEdgeAngle].compactMap { $0 }
+        guard !values.isEmpty else { return 0 }
+        return values.reduce(0, +) / Double(values.count)
+    }
+
+    var combinedSignedEdgeAngle: Double {
+        let values = [primaryClient.latestSignedEdgeAngle, secondaryClient?.latestSignedEdgeAngle].compactMap { $0 }
+        guard !values.isEmpty else { return 0 }
+        return values.reduce(0, +) / Double(values.count)
     }
 }

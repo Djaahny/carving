@@ -4,11 +4,13 @@ import MapKit
 import SwiftUI
 
 struct RunAnalysisView: View {
+    @EnvironmentObject private var metricStore: MetricSelectionStore
     let run: RunRecord
     @State private var selectedTurnID: TurnWindow.ID?
     @State private var selectedTurnProgress: Double?
     @State private var lastSelectedTurnProgress: Double?
     @State private var mapPosition: MapCameraPosition = .automatic
+    @State private var rawExportURL: URL?
 
     var body: some View {
         ScrollView {
@@ -71,6 +73,8 @@ struct RunAnalysisView: View {
                         updateSelectedProgress(for: selectedTurn)
                     }
                 }
+
+                rawDataCard
             }
         }
     }
@@ -236,21 +240,7 @@ struct RunAnalysisView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Run summary")
                 .font(.headline)
-            HStack(spacing: 12) {
-                summaryTile(title: "Max speed", value: formattedSpeed(maxSpeedKmh))
-                summaryTile(title: "Avg speed", value: formattedSpeed(averageSpeedKmh))
-            }
-            HStack(spacing: 12) {
-                summaryTile(title: "Turns", value: "\(run.turnWindows.count)")
-                summaryTile(title: "Run time", value: formattedDuration(runDuration))
-            }
-            HStack(spacing: 12) {
-                summaryTile(title: "Length", value: formattedDistance(runDistanceMeters))
-            }
-            HStack(spacing: 12) {
-                summaryTile(title: "Edge samples", value: formattedEdgeSampleCount)
-                summaryTile(title: "Resolution", value: formattedEdgeSampleResolution)
-            }
+            metricsGrid(metrics: metricStore.recordingMetrics.sorted { $0.rawValue < $1.rawValue })
         }
         .padding()
         .background(Color(.secondarySystemBackground))
@@ -269,6 +259,52 @@ struct RunAnalysisView: View {
         .padding(12)
         .background(Color(.systemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func metricsGrid(metrics: [MetricKind]) -> some View {
+        let columns = [GridItem(.flexible()), GridItem(.flexible())]
+        return LazyVGrid(columns: columns, spacing: 12) {
+            ForEach(metrics) { metric in
+                summaryTile(title: metric.title, value: recordingMetricValue(for: metric))
+            }
+        }
+    }
+
+    private func recordingMetricValue(for metric: MetricKind) -> String {
+        switch metric {
+        case .recordingMaxSpeed:
+            return formattedSpeed(maxSpeedKmh)
+        case .recordingAverageSpeed:
+            return formattedSpeed(averageSpeedKmh)
+        case .recordingRunDuration:
+            return formattedDuration(runDuration)
+        case .recordingDistance:
+            return formattedDistance(runDistanceMeters)
+        case .recordingTurnCount:
+            return "\(run.turnWindows.count)"
+        case .recordingAverageTurnDuration:
+            return formattedDuration(averageTurnDuration)
+        case .recordingMaxEdge:
+            return formattedEdge(maxEdgeAngle)
+        case .recordingAverageEdge:
+            return formattedEdge(averageEdgeAngle)
+        case .recordingPeakLeftEdge:
+            return formattedEdge(peakEdgeAngle(for: .left))
+        case .recordingPeakRightEdge:
+            return formattedEdge(peakEdgeAngle(for: .right))
+        case .recordingEdgeSampleCount:
+            return formattedEdgeSampleCount
+        case .recordingEdgeSampleRate:
+            return formattedEdgeSampleResolution
+        case .recordingEdgeRate:
+            return formattedEdgeRate(samples: run.edgeSamples)
+        case .recordingTurnSymmetry:
+            return formattedTurnSymmetry
+        case .recordingBalanceScore:
+            return formattedBalanceScore
+        default:
+            return "—"
+        }
     }
 
     private var maxSpeedKmh: Double? {
@@ -328,9 +364,54 @@ struct RunAnalysisView: View {
         return String(format: "%.1f Hz", hz)
     }
 
+    private var averageTurnDuration: TimeInterval? {
+        guard !run.turnWindows.isEmpty else { return nil }
+        let durations = run.turnWindows.map { max($0.endTime.timeIntervalSince($0.startTime), 0) }
+        let total = durations.reduce(0, +)
+        return total / Double(durations.count)
+    }
+
+    private var maxEdgeAngle: Double? {
+        run.edgeSamples.map(\.angle).max()
+    }
+
+    private var averageEdgeAngle: Double? {
+        guard !run.edgeSamples.isEmpty else { return nil }
+        let total = run.edgeSamples.map(\.angle).reduce(0, +)
+        return total / Double(run.edgeSamples.count)
+    }
+
+    private func peakEdgeAngle(for side: SensorSide) -> Double? {
+        let samples = run.edgeSamples.filter { $0.side == side }
+        return samples.map(\.angle).max()
+    }
+
+    private var formattedTurnSymmetry: String {
+        let leftTurns = run.turnWindows.filter { $0.direction == .left }.count
+        let rightTurns = run.turnWindows.filter { $0.direction == .right }.count
+        let total = max(leftTurns + rightTurns, 1)
+        let leftPercent = Double(leftTurns) / Double(total) * 100
+        let rightPercent = Double(rightTurns) / Double(total) * 100
+        return String(format: "L %.0f%% / R %.0f%%", leftPercent, rightPercent)
+    }
+
+    private var formattedBalanceScore: String {
+        let leftTurns = run.turnWindows.filter { $0.direction == .left }.count
+        let rightTurns = run.turnWindows.filter { $0.direction == .right }.count
+        let total = max(leftTurns + rightTurns, 1)
+        let delta = abs(leftTurns - rightTurns)
+        let score = max(0, 100 - (Double(delta) / Double(total) * 100))
+        return String(format: "%.0f%%", score)
+    }
+
     private func formattedSpeed(_ speed: Double?) -> String {
         guard let speed else { return "—" }
         return String(format: "%.1f km/h", speed)
+    }
+
+    private func formattedEdge(_ angle: Double?) -> String {
+        guard let angle else { return "—" }
+        return "\(Int(angle))°"
     }
 
     private func formattedDuration(_ duration: TimeInterval?) -> String {
@@ -352,6 +433,75 @@ struct RunAnalysisView: View {
         let duration = max(turn.endTime.timeIntervalSince(turn.startTime), 0)
         return formattedDuration(duration)
     }
+
+    private func formattedEdgeRate(samples: [EdgeSample]) -> String {
+        guard samples.count > 1 else { return "—" }
+        let sorted = samples.sorted { $0.timestamp < $1.timestamp }
+        var rates: [Double] = []
+        rates.reserveCapacity(sorted.count - 1)
+        for index in 1..<sorted.count {
+            let deltaAngle = abs(sorted[index].angle - sorted[index - 1].angle)
+            let deltaTime = sorted[index].timestamp.timeIntervalSince(sorted[index - 1].timestamp)
+            if deltaTime > 0 {
+                rates.append(deltaAngle / deltaTime)
+            }
+        }
+        guard !rates.isEmpty else { return "—" }
+        let average = rates.reduce(0, +) / Double(rates.count)
+        return String(format: "%.1f°/s", average)
+    }
+
+    private var rawDataCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Raw data export")
+                .font(.subheadline.weight(.semibold))
+            if run.rawSensorSamples.isEmpty {
+                Text("Raw data recording was disabled for this run.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Download the full sensor stream for AI analysis and metric development.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if let rawExportURL {
+                    ShareLink(item: rawExportURL) {
+                        Label("Share raw data", systemImage: "square.and.arrow.up")
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Button("Prepare raw data file") {
+                        rawExportURL = buildRawExport()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+        }
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func buildRawExport() -> URL? {
+        guard !run.rawSensorSamples.isEmpty else { return nil }
+        let export = RawDataExport(
+            runName: run.name,
+            date: run.date,
+            sensorMode: run.sensorMode,
+            samples: run.rawSensorSamples
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(export) else { return nil }
+        let filename = "\(run.name.replacingOccurrences(of: " ", with: "_"))_raw.json"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+        do {
+            try data.write(to: url, options: [.atomic])
+            return url
+        } catch {
+            return nil
+        }
+    }
 }
 
 private struct TurnChartSample: Identifiable {
@@ -360,4 +510,11 @@ private struct TurnChartSample: Identifiable {
     let edgeAngle: Double
     let turnSignal: Double
     let timestamp: Date
+}
+
+private struct RawDataExport: Codable {
+    let runName: String
+    let date: Date
+    let sensorMode: SensorMode
+    let samples: [RawSensorSample]
 }

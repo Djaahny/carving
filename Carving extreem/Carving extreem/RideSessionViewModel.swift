@@ -9,6 +9,9 @@ final class RideSessionViewModel: ObservableObject {
     @Published var elapsed: TimeInterval = 0
     @Published var timeCalloutsEnabled = true
     @Published var edgeCalloutsEnabled = true
+    @Published var rawDataRecordingEnabled = false
+    @Published var sensorMode: SensorMode = .single
+    @Published var primarySide: SensorSide = .single
     @Published var edgeCalloutThreshold: Double {
         didSet {
             UserDefaults.standard.set(edgeCalloutThreshold, forKey: edgeThresholdKey)
@@ -16,11 +19,13 @@ final class RideSessionViewModel: ObservableObject {
     }
     @Published var edgeSamples: [EdgeSample] = []
     @Published var latestEdgeAngle: Double = 0
+    @Published var latestEdgeAnglesBySide: [SensorSide: Double] = [:]
     @Published var latestSpeedMetersPerSecond: Double = 0
     @Published var turnWindows: [TurnWindow] = []
     @Published var backgroundSamples: [BackgroundSample] = []
     @Published var locationTrack: [LocationSample] = []
     @Published var turnCount = 0
+    @Published var rawSensorSamples: [RawSensorSample] = []
 
     private var startDate: Date?
     private var timerCancellable: AnyCancellable?
@@ -48,6 +53,7 @@ final class RideSessionViewModel: ObservableObject {
     private var lastTurnStart: Date?
     private var currentTurnPeakSignal: Double = 0
     private var latestLocationSample: LocationSample?
+    private var latestPrimarySample: SensorSample?
 
     init() {
         let storedThreshold = UserDefaults.standard.object(forKey: edgeThresholdKey) as? Double
@@ -69,6 +75,8 @@ final class RideSessionViewModel: ObservableObject {
         backgroundSamples = []
         locationTrack = []
         turnCount = 0
+        latestEdgeAnglesBySide = [:]
+        rawSensorSamples = []
         lastTimeCalloutCount = 0
         lastEdgeCalloutTime = nil
         lastSampleTime = nil
@@ -83,6 +91,7 @@ final class RideSessionViewModel: ObservableObject {
         lastTurnStart = nil
         currentTurnPeakSignal = 0
         latestLocationSample = nil
+        latestPrimarySample = nil
 
         timerCancellable = Timer.publish(every: 1, on: .main, in: .common)
             .autoconnect()
@@ -106,6 +115,7 @@ final class RideSessionViewModel: ObservableObject {
         edgeAngle: Double,
         speedMetersPerSecond: Double,
         location: LocationSample?,
+        side: SensorSide,
         at date: Date = Date()
     ) {
         guard isRunning else { return }
@@ -113,9 +123,10 @@ final class RideSessionViewModel: ObservableObject {
             return
         }
         lastSampleTime = date
-        latestEdgeAngle = edgeAngle
+        latestEdgeAnglesBySide[side] = edgeAngle
+        latestEdgeAngle = combinedEdgeAngle()
         latestSpeedMetersPerSecond = speedMetersPerSecond
-        let edgeSample = EdgeSample(timestamp: date, angle: edgeAngle)
+        let edgeSample = EdgeSample(timestamp: date, angle: edgeAngle, side: side)
         edgeSamples.append(edgeSample)
         recordedEdgeSamples.append(edgeSample)
         pruneSamples()
@@ -125,11 +136,32 @@ final class RideSessionViewModel: ObservableObject {
             trackLocation(location, at: date)
         }
 
-        let turnSignal = computeTurnSignal(from: sample)
-        updateTurnDetection(turnSignal: turnSignal, edgeAngle: edgeAngle, location: location, at: date)
+        if side == primarySide || (primarySide == .single && side != .right) {
+            latestPrimarySample = sample
+        }
+
+        if let primarySample = latestPrimarySample {
+            let turnSignal = computeTurnSignal(from: primarySample)
+            updateTurnDetection(turnSignal: turnSignal, edgeAngle: latestEdgeAngle, location: location, at: date)
+        }
 
         if !isInTurn {
-            maybeStoreBackgroundSample(edgeAngle: edgeAngle, at: date)
+            maybeStoreBackgroundSample(edgeAngle: edgeAngle, side: side, at: date)
+        }
+
+        if rawDataRecordingEnabled {
+            rawSensorSamples.append(
+                RawSensorSample(
+                    timestamp: date,
+                    ax: sample.ax,
+                    ay: sample.ay,
+                    az: sample.az,
+                    gx: sample.gx,
+                    gy: sample.gy,
+                    gz: sample.gz,
+                    side: side
+                )
+            )
         }
     }
 
@@ -153,12 +185,12 @@ final class RideSessionViewModel: ObservableObject {
         locationTrack.append(location)
     }
 
-    private func maybeStoreBackgroundSample(edgeAngle: Double, at date: Date) {
+    private func maybeStoreBackgroundSample(edgeAngle: Double, side: SensorSide, at date: Date) {
         if let lastBackgroundSampleTime, date.timeIntervalSince(lastBackgroundSampleTime) < backgroundSampleInterval {
             return
         }
         lastBackgroundSampleTime = date
-        backgroundSamples.append(BackgroundSample(timestamp: date, edgeAngle: edgeAngle))
+        backgroundSamples.append(BackgroundSample(timestamp: date, edgeAngle: edgeAngle, side: side))
     }
 
     private func computeTurnSignal(from sample: SensorSample) -> Double {
@@ -274,8 +306,19 @@ final class RideSessionViewModel: ObservableObject {
             turnWindows: turnWindows,
             backgroundSamples: backgroundSamples,
             locationTrack: locationTrack,
-            edgeSamples: recordedEdgeSamples
+            edgeSamples: recordedEdgeSamples,
+            rawSensorSamples: rawSensorSamples,
+            sensorMode: sensorMode
         )
+    }
+
+    private func combinedEdgeAngle() -> Double {
+        let available = latestEdgeAnglesBySide
+        if available.isEmpty {
+            return 0
+        }
+        let values = available.values
+        return values.reduce(0, +) / Double(values.count)
     }
 
     private func handleTimeCallout() {
