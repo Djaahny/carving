@@ -15,6 +15,7 @@ struct EdgeSample: Identifiable, Codable {
     let id = UUID()
     let timestamp: Date
     let angle: Double
+    let side: SensorSide
 }
 
 struct CalibratedAccel: Equatable {
@@ -147,17 +148,23 @@ final class StreamClient: NSObject, ObservableObject {
     @Published private(set) var latestSignedEdgeAngle: Double = 0
     @Published private(set) var calibrationState: CalibrationState = .empty
     @Published private(set) var latestCalibratedAccel: CalibratedAccel = .zero
+    @Published private(set) var latestAccelMagnitude: Double = 0
+    @Published private(set) var lastShockTimestamp: Date?
+    @Published private(set) var lastShockMagnitude: Double = 0
+    @Published private(set) var connectedIdentifier: String?
 
-    private let deviceName = "Carving-Extreem"
+    private let deviceName: String
     private let serviceUUID = CBUUID(string: "7a3f0001-3c12-4b50-8d32-9f8c8a3d8f31")
     private let dataCharacteristicUUID = CBUUID(string: "7a3f0002-3c12-4b50-8d32-9f8c8a3d8f31")
-    private let savedPeripheralKey = "lastPeripheralIdentifier"
-    private let savedPeripheralNameKey = "lastPeripheralName"
-    private let calibrationKey = "calibrationState"
+    private let savedPeripheralKey: String
+    private let savedPeripheralNameKey: String
+    private let calibrationKey: String
     private let gravity = 9.80665
     private let radiansToDegrees = 180.0 / Double.pi
     private let edgeAngleSmoothingAlpha = 0.18
     private let rotationEpsilon = 1e-6
+    private let shockThreshold = 2.5
+    private let shockCooldown: TimeInterval = 0.8
 
     private var centralManager: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -165,7 +172,11 @@ final class StreamClient: NSObject, ObservableObject {
     private var smoothedEdgeAngle: Double?
     private var smoothedSignedEdgeAngle: Double?
 
-    override init() {
+    init(deviceName: String = "Carving-Extreem", storageSuffix: String) {
+        self.deviceName = deviceName
+        savedPeripheralKey = "lastPeripheralIdentifier.\(storageSuffix)"
+        savedPeripheralNameKey = "lastPeripheralName.\(storageSuffix)"
+        calibrationKey = "calibrationState.\(storageSuffix)"
         super.init()
         calibrationState = loadCalibration()
         lastKnownSensorName = UserDefaults.standard.string(forKey: savedPeripheralNameKey)
@@ -215,6 +226,7 @@ final class StreamClient: NSObject, ObservableObject {
         status = statusText
         peripheral = nil
         dataCharacteristic = nil
+        connectedIdentifier = nil
     }
 
     private func retrieveCachedPeripheral() -> CBPeripheral? {
@@ -294,6 +306,7 @@ final class StreamClient: NSObject, ObservableObject {
             gz: gz * radiansToDegrees
         )
         latestSample = sample
+        updateShockState(for: sample)
         updateCalibratedAccel(from: sample)
         let edgeAngles = computeEdgeAngles(from: sample)
         let rawEdgeAngle = edgeAngles.magnitude
@@ -310,6 +323,19 @@ final class StreamClient: NSObject, ObservableObject {
             smoothedSignedEdgeAngle = rawSignedEdgeAngle
         }
         latestSignedEdgeAngle = smoothedSignedEdgeAngle ?? rawSignedEdgeAngle
+    }
+
+    private func updateShockState(for sample: SensorSample) {
+        let magnitude = sqrt(sample.ax * sample.ax + sample.ay * sample.ay + sample.az * sample.az)
+        latestAccelMagnitude = magnitude
+        let now = Date()
+        if magnitude >= shockThreshold {
+            if let lastShockTimestamp, now.timeIntervalSince(lastShockTimestamp) < shockCooldown {
+                return
+            }
+            lastShockTimestamp = now
+            lastShockMagnitude = magnitude
+        }
     }
 
     private func computeEdgeAngles(from sample: SensorSample) -> (signed: Double, magnitude: Double) {
@@ -580,6 +606,7 @@ extension StreamClient: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         status = "Discovering services…"
         isConnected = true
+        connectedIdentifier = peripheral.identifier.uuidString
         saveLastPeripheral(peripheral)
         peripheral.discoverServices([serviceUUID])
     }
