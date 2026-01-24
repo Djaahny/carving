@@ -43,7 +43,6 @@ final class RideSessionViewModel: ObservableObject {
     private let locationSampleInterval: TimeInterval = 0
 
     private let turnSettings = TurnDetectorSettings()
-    private var gravityEstimate: Vector3?
     private var recordedEdgeSamples: [EdgeSample] = []
     private var isInTurn = false
     private var turnStartCandidate: Date?
@@ -82,7 +81,6 @@ final class RideSessionViewModel: ObservableObject {
         lastSampleTime = nil
         lastBackgroundSampleTime = nil
         lastLocationSampleTime = nil
-        gravityEstimate = nil
         isInTurn = false
         turnStartCandidate = nil
         turnEndCandidate = nil
@@ -201,16 +199,7 @@ final class RideSessionViewModel: ObservableObject {
     }
 
     private func computeTurnSignal(from sample: SensorSample) -> Double {
-        let accel = Vector3(x: sample.ax, y: sample.ay, z: sample.az)
-        if let estimate = gravityEstimate {
-            gravityEstimate = estimate.lerp(to: accel, alpha: turnSettings.gravityAlpha)
-        } else {
-            gravityEstimate = accel
-        }
-        guard let gravityEstimate else { return 0 }
-        let gravityAxis = gravityEstimate.normalized
-        let gyro = Vector3(x: sample.gx, y: sample.gy, z: sample.gz)
-        return Vector3.dot(gyro, gravityAxis)
+        sample.gz
     }
 
     private func updateTurnDetection(turnSignal: Double, edgeAngle: Double, location: LocationSample?, at date: Date) {
@@ -301,7 +290,7 @@ final class RideSessionViewModel: ObservableObject {
         currentTurnPeakSignal = 0
     }
 
-    func buildRunRecord(runNumber: Int, date: Date = Date()) -> RunRecord {
+    func buildRunRecord(runNumber: Int, date: Date = Date(), calibration: RunCalibration? = nil) -> RunRecord {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         let dateString = formatter.string(from: date)
@@ -315,7 +304,8 @@ final class RideSessionViewModel: ObservableObject {
             locationTrack: locationTrack,
             edgeSamples: recordedEdgeSamples,
             rawSensorSamples: rawSensorSamples,
-            sensorMode: sensorMode
+            sensorMode: sensorMode,
+            calibration: calibration
         )
     }
 
@@ -382,35 +372,6 @@ private struct TurnDetectorSettings {
     let turnStopHold: TimeInterval = 0.2
     let minTurnDuration: TimeInterval = 0.4
     let minTurnGap: TimeInterval = 0.3
-    let gravityAlpha: Double = 0.08
-}
-
-private struct Vector3 {
-    let x: Double
-    let y: Double
-    let z: Double
-
-    var length: Double {
-        sqrt(x * x + y * y + z * z)
-    }
-
-    var normalized: Vector3 {
-        let len = length
-        guard len > 0 else { return self }
-        return Vector3(x: x / len, y: y / len, z: z / len)
-    }
-
-    func lerp(to target: Vector3, alpha: Double) -> Vector3 {
-        Vector3(
-            x: x + alpha * (target.x - x),
-            y: y + alpha * (target.y - y),
-            z: z + alpha * (target.z - z)
-        )
-    }
-
-    static func dot(_ lhs: Vector3, _ rhs: Vector3) -> Double {
-        lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z
-    }
 }
 
 private extension TurnDirection {
