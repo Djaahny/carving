@@ -1125,12 +1125,14 @@ private struct RunSessionView: View {
             )
         }
         let side = resolvedSide(for: client, fallback: fallbackSide)
+        let calibratedSample = client.calibratedSample(from: sample)
         session.ingest(
             sample: sample,
             edgeAngle: edgeAngle,
             speedMetersPerSecond: speed,
             location: location,
-            side: side
+            side: side,
+            rawSample: calibratedSample
         )
     }
 
