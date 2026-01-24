@@ -116,7 +116,8 @@ final class RideSessionViewModel: ObservableObject {
         speedMetersPerSecond: Double,
         location: LocationSample?,
         side: SensorSide,
-        at date: Date = Date()
+        at date: Date = Date(),
+        rawSample: SensorSample? = nil
     ) {
         guard isRunning else { return }
         if let lastSampleTime, date.timeIntervalSince(lastSampleTime) < minSampleInterval {
@@ -150,15 +151,16 @@ final class RideSessionViewModel: ObservableObject {
         }
 
         if rawDataRecordingEnabled {
+            let recordedSample = rawSample ?? sample
             rawSensorSamples.append(
                 RawSensorSample(
                     timestamp: date,
-                    ax: sample.ax,
-                    ay: sample.ay,
-                    az: sample.az,
-                    gx: sample.gx,
-                    gy: sample.gy,
-                    gz: sample.gz,
+                    ax: recordedSample.ax,
+                    ay: recordedSample.ay,
+                    az: recordedSample.az,
+                    gx: recordedSample.gx,
+                    gy: recordedSample.gy,
+                    gz: recordedSample.gz,
                     side: side,
                     speedMetersPerSecond: speedMetersPerSecond,
                     latitude: location?.latitude,

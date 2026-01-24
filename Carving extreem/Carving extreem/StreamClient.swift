@@ -477,6 +477,18 @@ final class StreamClient: NSObject, ObservableObject {
         return (pitch, roll)
     }
 
+    func calibratedSample(from sample: SensorSample) -> SensorSample {
+        let oriented = orientedAccel(from: sample)
+        return SensorSample(
+            ax: oriented.x,
+            ay: oriented.y,
+            az: oriented.z,
+            gx: sample.gx - calibrationState.gyroOffset[0],
+            gy: sample.gy - calibrationState.gyroOffset[1],
+            gz: sample.gz - calibrationState.gyroOffset[2]
+        )
+    }
+
     private func leveledAccel(from sample: SensorSample) -> Vector3 {
         let raw = Vector3(x: sample.ax, y: sample.ay, z: sample.az)
         let flat = Vector3(
