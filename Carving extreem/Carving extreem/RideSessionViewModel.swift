@@ -159,7 +159,12 @@ final class RideSessionViewModel: ObservableObject {
                     gx: sample.gx,
                     gy: sample.gy,
                     gz: sample.gz,
-                    side: side
+                    side: side,
+                    speedMetersPerSecond: speedMetersPerSecond,
+                    latitude: location?.latitude,
+                    longitude: location?.longitude,
+                    altitude: location?.altitude,
+                    horizontalAccuracy: location?.horizontalAccuracy
                 )
             )
         }

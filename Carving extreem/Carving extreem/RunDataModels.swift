@@ -53,8 +53,27 @@ struct RawSensorSample: Codable, Identifiable {
     let gy: Double
     let gz: Double
     let side: SensorSide
+    let speedMetersPerSecond: Double?
+    let latitude: Double?
+    let longitude: Double?
+    let altitude: Double?
+    let horizontalAccuracy: Double?
 
-    init(timestamp: Date, ax: Double, ay: Double, az: Double, gx: Double, gy: Double, gz: Double, side: SensorSide) {
+    init(
+        timestamp: Date,
+        ax: Double,
+        ay: Double,
+        az: Double,
+        gx: Double,
+        gy: Double,
+        gz: Double,
+        side: SensorSide,
+        speedMetersPerSecond: Double? = nil,
+        latitude: Double? = nil,
+        longitude: Double? = nil,
+        altitude: Double? = nil,
+        horizontalAccuracy: Double? = nil
+    ) {
         self.id = UUID()
         self.timestamp = timestamp
         self.ax = ax
@@ -64,6 +83,11 @@ struct RawSensorSample: Codable, Identifiable {
         self.gy = gy
         self.gz = gz
         self.side = side
+        self.speedMetersPerSecond = speedMetersPerSecond
+        self.latitude = latitude
+        self.longitude = longitude
+        self.altitude = altitude
+        self.horizontalAccuracy = horizontalAccuracy
     }
 }
 
