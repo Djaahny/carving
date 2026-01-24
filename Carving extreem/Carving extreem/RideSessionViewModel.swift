@@ -46,6 +46,7 @@ final class RideSessionViewModel: ObservableObject {
     private var currentTurnStart: Date?
     private var currentTurnSamples: [TurnSample] = []
     private var lastTurnStart: Date?
+    private var currentTurnPeakSignal: Double = 0
     private var latestLocationSample: LocationSample?
 
     init() {
@@ -80,6 +81,7 @@ final class RideSessionViewModel: ObservableObject {
         currentTurnStart = nil
         currentTurnSamples = []
         lastTurnStart = nil
+        currentTurnPeakSignal = 0
         latestLocationSample = nil
 
         timerCancellable = Timer.publish(every: 1, on: .main, in: .common)
@@ -175,7 +177,13 @@ final class RideSessionViewModel: ObservableObject {
     private func updateTurnDetection(turnSignal: Double, edgeAngle: Double, location: LocationSample?, at date: Date) {
         if isInTurn {
             currentTurnSamples.append(TurnSample(timestamp: date, edgeAngle: edgeAngle, turnSignal: turnSignal))
-            if abs(turnSignal) < turnSettings.turnOffThreshold, edgeAngle <= turnSettings.edgeAngleExitThreshold {
+            currentTurnPeakSignal = max(currentTurnPeakSignal, abs(turnSignal))
+            let dynamicTurnOffThreshold = max(
+                turnSettings.turnOffThreshold,
+                currentTurnPeakSignal * turnSettings.turnOffPeakRatio
+            )
+            let edgeExitThreshold = turnSettings.edgeAngleExitThreshold + turnSettings.edgeAngleExitMargin
+            if abs(turnSignal) < dynamicTurnOffThreshold, edgeAngle <= edgeExitThreshold {
                 if turnEndCandidate == nil {
                     turnEndCandidate = date
                 }
@@ -214,6 +222,7 @@ final class RideSessionViewModel: ObservableObject {
         turnEndCandidate = nil
         currentTurnStart = date
         lastTurnStart = date
+        currentTurnPeakSignal = abs(turnSignal)
         currentTurnSamples = [TurnSample(timestamp: date, edgeAngle: edgeAngle, turnSignal: turnSignal)]
         turnCount += 1
     }
@@ -250,6 +259,7 @@ final class RideSessionViewModel: ObservableObject {
         turnEndCandidate = nil
         currentTurnStart = nil
         currentTurnSamples = []
+        currentTurnPeakSignal = 0
     }
 
     func buildRunRecord(runNumber: Int, date: Date = Date()) -> RunRecord {
@@ -316,6 +326,8 @@ private struct TurnDetectorSettings {
     let turnOnThreshold: Double = 25
     let turnOffThreshold: Double = 15
     let edgeAngleExitThreshold: Double = 5
+    let edgeAngleExitMargin: Double = 3
+    let turnOffPeakRatio: Double = 0.35
     let turnStartHold: TimeInterval = 0.15
     let turnStopHold: TimeInterval = 0.2
     let minTurnDuration: TimeInterval = 0.4
