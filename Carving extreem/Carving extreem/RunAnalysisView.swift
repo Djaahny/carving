@@ -491,7 +491,12 @@ struct RunAnalysisView: View {
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
+        let dateFormatter = ISO8601DateFormatter()
+        dateFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(dateFormatter.string(from: date))
+        }
         guard let data = try? encoder.encode(export) else { return nil }
         let filename = "\(run.name.replacingOccurrences(of: " ", with: "_"))_raw.json"
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
