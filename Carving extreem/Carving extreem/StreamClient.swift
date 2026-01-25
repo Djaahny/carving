@@ -195,6 +195,7 @@ final class StreamClient: NSObject, ObservableObject {
     private let rotationEpsilon = 1e-6
     private let stillnessAccelStdDevThreshold = 0.05
     private let stillnessGyroStdDevThreshold = 2.0
+    private let alignmentReferenceThreshold = 0.75
     private let forwardMinSampleCount = 6
     private let forwardMinMagnitude = 0.015
     private let forwardMinAlignmentRatio = 0.9
@@ -455,6 +456,7 @@ final class StreamClient: NSObject, ObservableObject {
         let accelScale = 1.0 / accelNorm
         let gHat = meanAccel.normalized
         let zAxis = Vector3(x: -gHat.x, y: -gHat.y, z: -gHat.z)
+        let levelRotation = levelRotationMatrix(for: zAxis)
 
         pendingStationaryCalibration = PendingCalibration(
             zAxis: zAxis,
@@ -468,11 +470,7 @@ final class StreamClient: NSObject, ObservableObject {
         state.gyroBias = [meanGyro.x, meanGyro.y, meanGyro.z]
         state.accelScale = accelScale
         state.zAxis = [zAxis.x, zAxis.y, zAxis.z]
-        state.rotationMatrix = [
-            [1, 0, 0],
-            [0, 1, 0],
-            [0, 0, 1]
-        ]
+        state.rotationMatrix = levelRotation
         state.isCalibrated = false
         saveCalibration(state)
         return .success
@@ -576,7 +574,7 @@ final class StreamClient: NSObject, ObservableObject {
     }
 
     private func bootFrame(from sample: SensorSample) -> (accel: Vector3, gyro: Vector3)? {
-        guard calibrationState.isCalibrated else { return nil }
+        guard shouldApplyCalibration else { return nil }
         let matrix = normalizedRotationMatrix(calibrationState.rotationMatrix)
         let accelScaled = Vector3(
             x: sample.ax * calibrationState.accelScale,
@@ -591,6 +589,38 @@ final class StreamClient: NSObject, ObservableObject {
         let accelBoot = applyRotation(matrix, to: accelScaled)
         let gyroBoot = applyRotation(matrix, to: gyroUnbiased)
         return (accelBoot, gyroBoot)
+    }
+
+    private var shouldApplyCalibration: Bool {
+        if calibrationState.isCalibrated {
+            return true
+        }
+        let hasBias = calibrationState.gyroBias.contains { abs($0) > rotationEpsilon }
+        let hasScale = abs(calibrationState.accelScale - 1.0) > rotationEpsilon
+        let hasLevelAlignment = calibrationState.zAxis.contains { abs($0) > rotationEpsilon } &&
+            !(abs(calibrationState.zAxis[0]) < rotationEpsilon &&
+              abs(calibrationState.zAxis[1]) < rotationEpsilon &&
+              abs(calibrationState.zAxis[2] - 1.0) < rotationEpsilon)
+        return hasBias || hasScale || hasLevelAlignment
+    }
+
+    private func levelRotationMatrix(for zAxis: Vector3) -> [[Double]] {
+        let z = zAxis.normalized
+        let reference: Vector3
+        if abs(z.x) < alignmentReferenceThreshold {
+            reference = Vector3(x: 1, y: 0, z: 0)
+        } else {
+            reference = Vector3(x: 0, y: 1, z: 0)
+        }
+        let xTemp = reference - z * Vector3.dot(reference, z)
+        let xAxis = xTemp.length > rotationEpsilon ? xTemp.normalized : Vector3(x: 0, y: 1, z: 0)
+        let yAxis = Vector3.cross(z, xAxis).normalized
+        let correctedXAxis = Vector3.cross(yAxis, z)
+        return [
+            [correctedXAxis.x, correctedXAxis.y, correctedXAxis.z],
+            [yAxis.x, yAxis.y, yAxis.z],
+            [z.x, z.y, z.z]
+        ]
     }
 
     private func normalizedRotationMatrix(_ matrix: [[Double]]) -> [[Double]] {

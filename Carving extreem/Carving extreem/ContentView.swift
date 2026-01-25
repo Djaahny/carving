@@ -574,7 +574,7 @@ private struct CalibrationFlowView: View {
                 return "Stand still for about 2 seconds with the boot flat. Small sways are ok, but try to keep the boot steady so we can learn gravity and gyro bias."
             case .forward:
                 return """
-                Apply the flat calibration from step 1, then start step 2. Gently tap your front foot while keeping your heel down, roll side to side, and then glide straight for 2–3 seconds. Keep the boot flat and avoid carving so we can spot the forward direction.
+                Apply the flat calibration from step 1, then start step 2. Glide straight for 2–3 seconds with the boot mostly flat. Small pitch/roll changes are ok; just avoid hard carving so we can spot the forward direction.
                 """
             case .complete:
                 return "You're ready to ride with calibrated boot axes."
@@ -668,15 +668,15 @@ private struct CalibrationFlowView: View {
                             Text("Target")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
-                            Text("Pitch 0°")
-                            Text("Roll 0°")
+                            Text(step == .forward ? "Pitch ±15°" : "Pitch 0°")
+                            Text(step == .forward ? "Roll ±15°" : "Roll 0°")
                         }
                     }
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
                     Text(step == .forward
-                         ? "Start from the flat pose, tap your front foot with heel down, roll side to side, then glide straight while keeping pitch/roll near zero."
+                         ? "Start from the flat pose, then glide straight while keeping pitch/roll within about ±15°."
                          : "Hold the boot steady and keep pitch/roll near zero.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
