@@ -195,6 +195,10 @@ final class StreamClient: NSObject, ObservableObject {
     private let rotationEpsilon = 1e-6
     private let stillnessAccelStdDevThreshold = 0.05
     private let stillnessGyroStdDevThreshold = 2.0
+    private let forwardMinSampleCount = 6
+    private let forwardMinMagnitude = 0.015
+    private let forwardMinAlignmentRatio = 0.9
+    private let forwardFilterAlpha = 0.2
 
     private var centralManager: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -401,7 +405,7 @@ final class StreamClient: NSObject, ObservableObject {
 
     func captureStationaryCalibration(samples: [SensorSample]) -> CalibrationResult {
         guard !samples.isEmpty else {
-            return .failure("Not enough samples. Try again.")
+            return .failure("No samples captured yet. Make sure the sensor is streaming and try again.")
         }
 
         let count = Double(samples.count)
@@ -434,12 +438,12 @@ final class StreamClient: NSObject, ObservableObject {
         let accelStdDev = standardDeviation(values: accelMagnitude)
         let gyroStdDev = standardDeviation(values: gyroMagnitude)
         guard accelStdDev <= stillnessAccelStdDevThreshold, gyroStdDev <= stillnessGyroStdDevThreshold else {
-            return .failure("Too much movement detected. Hold still for 2 seconds and try again.")
+            return .failure("Too much movement detected. Keep the boot still for 2 seconds (no stamping or sliding).")
         }
 
         let accelNorm = meanAccel.length
         guard accelNorm > rotationEpsilon else {
-            return .failure("Gravity vector was too small. Reposition the boot and try again.")
+            return .failure("Gravity signal was too small. Set the boot flat on the snow and try again.")
         }
         let accelScale = 1.0 / accelNorm
         let gHat = meanAccel.normalized
@@ -469,10 +473,10 @@ final class StreamClient: NSObject, ObservableObject {
 
     func captureForwardCalibration(samples: [SensorSample]) -> CalibrationResult {
         guard let pending = pendingStationaryCalibration else {
-            return .failure("Please complete the stationary step first.")
+            return .failure("Finish the stillness step first, then start the glide capture.")
         }
         guard !samples.isEmpty else {
-            return .failure("Not enough samples collected. Try again.")
+            return .failure("No glide samples captured. Start the glide capture and keep moving for 2–3 seconds.")
         }
 
         let forwardEstimate = estimateForwardAxis(
@@ -491,12 +495,12 @@ final class StreamClient: NSObject, ObservableObject {
         let zAxis = pending.zAxis.normalized
         let xTemp = forwardAxis - zAxis * Vector3.dot(forwardAxis, zAxis)
         guard xTemp.length > rotationEpsilon else {
-            return .failure("Forward direction was too close to vertical. Try again.")
+            return .failure("Forward direction looked vertical. Keep the boot flat and glide straight.")
         }
         let xAxis = xTemp.normalized
         let crossMagnitude = Vector3.cross(zAxis, xAxis).length
         guard crossMagnitude > 0.1 else {
-            return .failure("Forward axis was too close to gravity. Try again.")
+            return .failure("Forward axis was too close to gravity. Keep the ski flat and avoid tilting.")
         }
         let yAxis = Vector3.cross(zAxis, xAxis).normalized
         let correctedXAxis = Vector3.cross(yAxis, zAxis)
@@ -619,13 +623,13 @@ final class StreamClient: NSObject, ObservableObject {
         var errorDescription: String? {
             switch self {
             case .insufficientMotion:
-                return "Not enough forward motion detected. Glide for a bit longer and retry."
+                return "We didn't detect enough forward motion. Glide a little longer before stopping."
             case .lowAcceleration:
-                return "Forward acceleration was very low. Add a gentle push and keep gliding straight."
+                return "Forward acceleration was very low. Give a gentle push and keep gliding straight."
             case .unclearDirection:
-                return "Forward direction was unclear. Try a smoother straight glide."
+                return "Forward direction was unclear. Try a smoother straight glide with skis flat."
             case .noisyDirection:
-                return "Forward direction was noisy. Keep skis flat and avoid carving while gliding."
+                return "Forward direction was noisy. Keep skis flat and avoid carving during the glide."
             }
         }
     }
@@ -640,6 +644,7 @@ final class StreamClient: NSObject, ObservableObject {
         var sampleCount = 0
         var projections: [Vector3] = []
         var magnitudeSum = 0.0
+        var filteredProjection: Vector3?
 
         for sample in samples {
             let accel = Vector3(x: sample.ax, y: sample.ay, z: sample.az)
@@ -651,25 +656,31 @@ final class StreamClient: NSObject, ObservableObject {
             let linear = scaled - gHat
             let projection = linear - zAxis * Vector3.dot(linear, zAxis)
             guard projection.length > rotationEpsilon else { continue }
+            if let current = filteredProjection {
+                filteredProjection = current * (1 - forwardFilterAlpha) + projection * forwardFilterAlpha
+            } else {
+                filteredProjection = projection
+            }
+            guard let filtered = filteredProjection, filtered.length > rotationEpsilon else { continue }
             sampleCount += 1
-            projections.append(projection)
-            magnitudeSum += projection.length
-            covariance[0][0] += projection.x * projection.x
-            covariance[0][1] += projection.x * projection.y
-            covariance[0][2] += projection.x * projection.z
-            covariance[1][0] += projection.y * projection.x
-            covariance[1][1] += projection.y * projection.y
-            covariance[1][2] += projection.y * projection.z
-            covariance[2][0] += projection.z * projection.x
-            covariance[2][1] += projection.z * projection.y
-            covariance[2][2] += projection.z * projection.z
+            projections.append(filtered)
+            magnitudeSum += filtered.length
+            covariance[0][0] += filtered.x * filtered.x
+            covariance[0][1] += filtered.x * filtered.y
+            covariance[0][2] += filtered.x * filtered.z
+            covariance[1][0] += filtered.y * filtered.x
+            covariance[1][1] += filtered.y * filtered.y
+            covariance[1][2] += filtered.y * filtered.z
+            covariance[2][0] += filtered.z * filtered.x
+            covariance[2][1] += filtered.z * filtered.y
+            covariance[2][2] += filtered.z * filtered.z
         }
 
-        guard sampleCount >= 8 else {
+        guard sampleCount >= forwardMinSampleCount else {
             return .failure(.insufficientMotion)
         }
         let meanMagnitude = magnitudeSum / Double(sampleCount)
-        guard meanMagnitude >= 0.03 else {
+        guard meanMagnitude >= forwardMinMagnitude else {
             return .failure(.lowAcceleration)
         }
         var vector = Vector3(x: 1, y: 0, z: 0)
@@ -698,7 +709,7 @@ final class StreamClient: NSObject, ObservableObject {
             perpendicularSum += perpendicular
         }
         let alignmentRatio = parallelSum / max(perpendicularSum, rotationEpsilon)
-        guard alignmentRatio >= 1.2 else {
+        guard alignmentRatio >= forwardMinAlignmentRatio else {
             return .failure(.noisyDirection)
         }
         return .success(
