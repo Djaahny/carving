@@ -196,10 +196,10 @@ final class StreamClient: NSObject, ObservableObject {
     private let stillnessAccelStdDevThreshold = 0.05
     private let stillnessGyroStdDevThreshold = 2.0
     private let alignmentReferenceThreshold = 0.75
-    private let forwardMinSampleCount = 6
-    private let forwardMinMagnitude = 0.015
-    private let forwardMinAlignmentRatio = 0.9
-    private let forwardFilterAlpha = 0.2
+    private let rollMinSampleCount = 6
+    private let rollMinMagnitude = 0.25
+    private let rollMinAlignmentRatio = 0.85
+    private let rollFilterAlpha = 0.2
 
     private var centralManager: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -478,16 +478,16 @@ final class StreamClient: NSObject, ObservableObject {
 
     func captureForwardCalibration(samples: [SensorSample]) -> CalibrationResult {
         guard let pending = pendingStationaryCalibration else {
-            return .failure("Finish the stillness step first, then start the glide capture.")
+            return .failure("Finish the stillness step first, then start the side-to-side capture.")
         }
         guard !samples.isEmpty else {
-            return .failure("No glide samples captured. Start the glide capture and keep moving for 2–3 seconds.")
+            return .failure("No tilt samples captured. Start the tilt capture and rock edge-to-edge for 2–3 seconds.")
         }
 
-        let forwardEstimate = estimateForwardAxis(
+        let forwardEstimate = estimateForwardAxisFromRoll(
             from: samples,
             zAxis: pending.zAxis,
-            accelScale: pending.accelScale
+            gyroBias: pending.gyroBias
         )
         let forwardAxis: Vector3
         switch forwardEstimate {
@@ -501,7 +501,7 @@ final class StreamClient: NSObject, ObservableObject {
         let xTemp = forwardAxis - zAxis * Vector3.dot(forwardAxis, zAxis)
         guard xTemp.length > rotationEpsilon else {
             return .failure(
-                "Forward direction looked vertical. Keep the boot flat and glide straight. " +
+                "Roll axis looked vertical. Keep the boot flat and tilt side to side. " +
                 "Projection \(Self.formatDecimal(xTemp.length)) (min \(Self.formatDecimal(rotationEpsilon)))."
             )
         }
@@ -509,7 +509,7 @@ final class StreamClient: NSObject, ObservableObject {
         let crossMagnitude = Vector3.cross(zAxis, xAxis).length
         guard crossMagnitude > 0.1 else {
             return .failure(
-                "Forward axis was too close to gravity. Keep the ski flat and avoid tilting. " +
+                "Roll axis was too close to gravity. Keep the boot flat and avoid twisting. " +
                 "Cross magnitude \(Self.formatDecimal(crossMagnitude)) (min 0.100)."
             )
         }
@@ -661,16 +661,16 @@ final class StreamClient: NSObject, ObservableObject {
         return sqrt(variance)
     }
 
-    private struct ForwardAxisEstimate {
+    private struct AxisEstimate {
         let axis: Vector3
         let sampleCount: Int
         let meanMagnitude: Double
         let alignmentRatio: Double
     }
 
-    private enum ForwardAxisError: LocalizedError {
+    private enum AxisEstimateError: LocalizedError {
         case insufficientMotion(sampleCount: Int, minSampleCount: Int)
-        case lowAcceleration(meanMagnitude: Double, minMagnitude: Double)
+        case lowAngularSpeed(meanMagnitude: Double, minMagnitude: Double)
         case unclearDirection
         case noisyDirection(alignmentRatio: Double, minAlignmentRatio: Double)
 
@@ -678,31 +678,30 @@ final class StreamClient: NSObject, ObservableObject {
             switch self {
             case .insufficientMotion(let sampleCount, let minSampleCount):
                 return """
-                We didn't detect enough forward motion. Glide a little longer before stopping. \
+                We didn't detect enough side-to-side motion. Tilt the boot edge-to-edge a little longer. \
                 Samples \(sampleCount) (min \(minSampleCount)).
                 """
-            case .lowAcceleration(let meanMagnitude, let minMagnitude):
+            case .lowAngularSpeed(let meanMagnitude, let minMagnitude):
                 return """
-                Forward acceleration was very low. Give a gentle push and keep gliding straight. \
-                Mean \(StreamClient.formatDecimal(meanMagnitude)) (min \(StreamClient.formatDecimal(minMagnitude))).
+                Roll rate was very low. Tilt a bit faster edge-to-edge without twisting. \
+                Rate \(StreamClient.formatDecimal(meanMagnitude)) (min \(StreamClient.formatDecimal(minMagnitude))).
                 """
             case .unclearDirection:
-                return "Forward direction was unclear. Try a smoother straight glide with skis flat."
+                return "Roll direction was unclear. Try a smoother side-to-side tilt with the boot flat."
             case .noisyDirection(let alignmentRatio, let minAlignmentRatio):
                 return """
-                Forward direction was noisy. Keep skis flat and avoid carving during the glide. \
+                Roll direction was noisy. Keep the boot flat and avoid twisting during the tilt. \
                 Alignment \(StreamClient.formatDecimal(alignmentRatio)) (min \(StreamClient.formatDecimal(minAlignmentRatio))).
                 """
             }
         }
     }
 
-    private func estimateForwardAxis(
+    private func estimateForwardAxisFromRoll(
         from samples: [SensorSample],
         zAxis: Vector3,
-        accelScale: Double
-    ) -> Result<ForwardAxisEstimate, ForwardAxisError> {
-        let gHat = Vector3(x: -zAxis.x, y: -zAxis.y, z: -zAxis.z)
+        gyroBias: Vector3
+    ) -> Result<AxisEstimate, AxisEstimateError> {
         var covariance = Array(repeating: Array(repeating: 0.0, count: 3), count: 3)
         var sampleCount = 0
         var projections: [Vector3] = []
@@ -710,17 +709,15 @@ final class StreamClient: NSObject, ObservableObject {
         var filteredProjection: Vector3?
 
         for sample in samples {
-            let accel = Vector3(x: sample.ax, y: sample.ay, z: sample.az)
-            let scaled = Vector3(
-                x: accel.x * accelScale,
-                y: accel.y * accelScale,
-                z: accel.z * accelScale
+            let gyro = Vector3(
+                x: sample.gx - gyroBias.x,
+                y: sample.gy - gyroBias.y,
+                z: sample.gz - gyroBias.z
             )
-            let linear = scaled - gHat
-            let projection = linear - zAxis * Vector3.dot(linear, zAxis)
+            let projection = gyro - zAxis * Vector3.dot(gyro, zAxis)
             guard projection.length > rotationEpsilon else { continue }
             if let current = filteredProjection {
-                filteredProjection = current * (1 - forwardFilterAlpha) + projection * forwardFilterAlpha
+                filteredProjection = current * (1 - rollFilterAlpha) + projection * rollFilterAlpha
             } else {
                 filteredProjection = projection
             }
@@ -739,12 +736,12 @@ final class StreamClient: NSObject, ObservableObject {
             covariance[2][2] += filtered.z * filtered.z
         }
 
-        guard sampleCount >= forwardMinSampleCount else {
-            return .failure(.insufficientMotion(sampleCount: sampleCount, minSampleCount: forwardMinSampleCount))
+        guard sampleCount >= rollMinSampleCount else {
+            return .failure(.insufficientMotion(sampleCount: sampleCount, minSampleCount: rollMinSampleCount))
         }
         let meanMagnitude = magnitudeSum / Double(sampleCount)
-        guard meanMagnitude >= forwardMinMagnitude else {
-            return .failure(.lowAcceleration(meanMagnitude: meanMagnitude, minMagnitude: forwardMinMagnitude))
+        guard meanMagnitude >= rollMinMagnitude else {
+            return .failure(.lowAngularSpeed(meanMagnitude: meanMagnitude, minMagnitude: rollMinMagnitude))
         }
         var vector = Vector3(x: 1, y: 0, z: 0)
         for _ in 0..<10 {
@@ -772,11 +769,11 @@ final class StreamClient: NSObject, ObservableObject {
             perpendicularSum += perpendicular
         }
         let alignmentRatio = parallelSum / max(perpendicularSum, rotationEpsilon)
-        guard alignmentRatio >= forwardMinAlignmentRatio else {
-            return .failure(.noisyDirection(alignmentRatio: alignmentRatio, minAlignmentRatio: forwardMinAlignmentRatio))
+        guard alignmentRatio >= rollMinAlignmentRatio else {
+            return .failure(.noisyDirection(alignmentRatio: alignmentRatio, minAlignmentRatio: rollMinAlignmentRatio))
         }
         return .success(
-            ForwardAxisEstimate(
+            AxisEstimate(
                 axis: vector,
                 sampleCount: sampleCount,
                 meanMagnitude: meanMagnitude,
