@@ -196,10 +196,8 @@ final class StreamClient: NSObject, ObservableObject {
     private let stillnessAccelStdDevThreshold = 0.05
     private let stillnessGyroStdDevThreshold = 2.0
     private let alignmentReferenceThreshold = 0.75
-    private let rollMinSampleCount = 6
-    private let rollMinMagnitude = 0.25
-    private let rollMinAlignmentRatio = 0.85
-    private let rollFilterAlpha = 0.2
+    private let edgeHoldMinSampleCount = 10
+    private let edgeHoldMinSeparationDegrees = 25.0
 
     private var centralManager: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -476,32 +474,35 @@ final class StreamClient: NSObject, ObservableObject {
         return .success
     }
 
-    func captureForwardCalibration(samples: [SensorSample]) -> CalibrationResult {
+    func captureForwardCalibration(edgeOneSamples: [SensorSample], edgeTwoSamples: [SensorSample]) -> CalibrationResult {
         guard let pending = pendingStationaryCalibration else {
-            return .failure("Finish the stillness step first, then start the side-to-side capture.")
+            return .failure("Finish the stillness step first, then start the edge holds.")
         }
-        guard !samples.isEmpty else {
-            return .failure("No tilt samples captured. Start the tilt capture and rock edge-to-edge for 2–3 seconds.")
+        guard edgeOneSamples.count >= edgeHoldMinSampleCount else {
+            return .failure("Not enough samples for the first edge hold. Keep the boot steady on the edge for 2 seconds.")
         }
-
-        let forwardEstimate = estimateForwardAxisFromRoll(
-            from: samples,
-            zAxis: pending.zAxis,
-            gyroBias: pending.gyroBias
-        )
-        let forwardAxis: Vector3
-        switch forwardEstimate {
-        case .success(let estimate):
-            forwardAxis = estimate.axis
-        case .failure(let error):
-            return .failure(error.localizedDescription)
+        guard edgeTwoSamples.count >= edgeHoldMinSampleCount else {
+            return .failure("Not enough samples for the second edge hold. Hold the opposite edge for 2 seconds.")
         }
+        let edgeOneMean = meanAccel(from: edgeOneSamples) * pending.accelScale
+        let edgeTwoMean = meanAccel(from: edgeTwoSamples) * pending.accelScale
+        let edgeOneGravity = edgeOneMean.normalized
+        let edgeTwoGravity = edgeTwoMean.normalized
+        let dot = max(min(Vector3.dot(edgeOneGravity, edgeTwoGravity), 1.0), -1.0)
+        let separationAngle = acos(dot) * radiansToDegrees
+        guard separationAngle >= edgeHoldMinSeparationDegrees else {
+            return .failure(
+                "Edge holds were too similar. Tilt further edge-to-edge before holding. " +
+                "Separation \(Self.formatDecimal(separationAngle))° (min \(Self.formatDecimal(edgeHoldMinSeparationDegrees))°)."
+            )
+        }
+        let forwardAxis = Vector3.cross(edgeOneGravity, edgeTwoGravity)
 
         let zAxis = pending.zAxis.normalized
         let xTemp = forwardAxis - zAxis * Vector3.dot(forwardAxis, zAxis)
         guard xTemp.length > rotationEpsilon else {
             return .failure(
-                "Roll axis looked vertical. Keep the boot flat and tilt side to side. " +
+                "Edge axis looked vertical. Keep the boot flat and tilt side to side. " +
                 "Projection \(Self.formatDecimal(xTemp.length)) (min \(Self.formatDecimal(rotationEpsilon)))."
             )
         }
@@ -654,132 +655,19 @@ final class StreamClient: NSObject, ObservableObject {
         )
     }
 
+    private func meanAccel(from samples: [SensorSample]) -> Vector3 {
+        guard !samples.isEmpty else { return .zero }
+        let total = samples.reduce(Vector3.zero) { total, sample in
+            total + Vector3(x: sample.ax, y: sample.ay, z: sample.az)
+        }
+        return total * (1.0 / Double(samples.count))
+    }
+
     private func standardDeviation(values: [Double]) -> Double {
         guard !values.isEmpty else { return 0 }
         let mean = values.reduce(0, +) / Double(values.count)
         let variance = values.reduce(0) { $0 + pow($1 - mean, 2) } / Double(values.count)
         return sqrt(variance)
-    }
-
-    private struct AxisEstimate {
-        let axis: Vector3
-        let sampleCount: Int
-        let meanMagnitude: Double
-        let alignmentRatio: Double
-    }
-
-    private enum AxisEstimateError: LocalizedError {
-        case insufficientMotion(sampleCount: Int, minSampleCount: Int)
-        case lowAngularSpeed(meanMagnitude: Double, minMagnitude: Double)
-        case unclearDirection
-        case noisyDirection(alignmentRatio: Double, minAlignmentRatio: Double)
-
-        var errorDescription: String? {
-            switch self {
-            case .insufficientMotion(let sampleCount, let minSampleCount):
-                return """
-                We didn't detect enough side-to-side motion. Tilt the boot edge-to-edge a little longer. \
-                Samples \(sampleCount) (min \(minSampleCount)).
-                """
-            case .lowAngularSpeed(let meanMagnitude, let minMagnitude):
-                return """
-                Roll rate was very low. Tilt a bit faster edge-to-edge without twisting. \
-                Rate \(StreamClient.formatDecimal(meanMagnitude)) (min \(StreamClient.formatDecimal(minMagnitude))).
-                """
-            case .unclearDirection:
-                return "Roll direction was unclear. Try a smoother side-to-side tilt with the boot flat."
-            case .noisyDirection(let alignmentRatio, let minAlignmentRatio):
-                return """
-                Roll direction was noisy. Keep the boot flat and avoid twisting during the tilt. \
-                Alignment \(StreamClient.formatDecimal(alignmentRatio)) (min \(StreamClient.formatDecimal(minAlignmentRatio))).
-                """
-            }
-        }
-    }
-
-    private func estimateForwardAxisFromRoll(
-        from samples: [SensorSample],
-        zAxis: Vector3,
-        gyroBias: Vector3
-    ) -> Result<AxisEstimate, AxisEstimateError> {
-        var covariance = Array(repeating: Array(repeating: 0.0, count: 3), count: 3)
-        var sampleCount = 0
-        var projections: [Vector3] = []
-        var magnitudeSum = 0.0
-        var filteredProjection: Vector3?
-
-        for sample in samples {
-            let gyro = Vector3(
-                x: sample.gx - gyroBias.x,
-                y: sample.gy - gyroBias.y,
-                z: sample.gz - gyroBias.z
-            )
-            let projection = gyro - zAxis * Vector3.dot(gyro, zAxis)
-            guard projection.length > rotationEpsilon else { continue }
-            if let current = filteredProjection {
-                filteredProjection = current * (1 - rollFilterAlpha) + projection * rollFilterAlpha
-            } else {
-                filteredProjection = projection
-            }
-            guard let filtered = filteredProjection, filtered.length > rotationEpsilon else { continue }
-            sampleCount += 1
-            projections.append(filtered)
-            magnitudeSum += filtered.length
-            covariance[0][0] += filtered.x * filtered.x
-            covariance[0][1] += filtered.x * filtered.y
-            covariance[0][2] += filtered.x * filtered.z
-            covariance[1][0] += filtered.y * filtered.x
-            covariance[1][1] += filtered.y * filtered.y
-            covariance[1][2] += filtered.y * filtered.z
-            covariance[2][0] += filtered.z * filtered.x
-            covariance[2][1] += filtered.z * filtered.y
-            covariance[2][2] += filtered.z * filtered.z
-        }
-
-        guard sampleCount >= rollMinSampleCount else {
-            return .failure(.insufficientMotion(sampleCount: sampleCount, minSampleCount: rollMinSampleCount))
-        }
-        let meanMagnitude = magnitudeSum / Double(sampleCount)
-        guard meanMagnitude >= rollMinMagnitude else {
-            return .failure(.lowAngularSpeed(meanMagnitude: meanMagnitude, minMagnitude: rollMinMagnitude))
-        }
-        var vector = Vector3(x: 1, y: 0, z: 0)
-        for _ in 0..<10 {
-            let next = Vector3(
-                x: covariance[0][0] * vector.x + covariance[0][1] * vector.y + covariance[0][2] * vector.z,
-                y: covariance[1][0] * vector.x + covariance[1][1] * vector.y + covariance[1][2] * vector.z,
-                z: covariance[2][0] * vector.x + covariance[2][1] * vector.y + covariance[2][2] * vector.z
-            )
-            let nextLength = next.length
-            guard nextLength > rotationEpsilon else {
-                return .failure(.unclearDirection)
-            }
-            vector = Vector3(x: next.x / nextLength, y: next.y / nextLength, z: next.z / nextLength)
-        }
-        let meanProjection = projections.reduce(Vector3.zero, { $0 + $1 })
-        if Vector3.dot(meanProjection, vector) < 0 {
-            vector = vector * -1
-        }
-        var parallelSum = 0.0
-        var perpendicularSum = 0.0
-        for projection in projections {
-            let parallel = Vector3.dot(projection, vector)
-            let perpendicular = (projection - vector * parallel).length
-            parallelSum += abs(parallel)
-            perpendicularSum += perpendicular
-        }
-        let alignmentRatio = parallelSum / max(perpendicularSum, rotationEpsilon)
-        guard alignmentRatio >= rollMinAlignmentRatio else {
-            return .failure(.noisyDirection(alignmentRatio: alignmentRatio, minAlignmentRatio: rollMinAlignmentRatio))
-        }
-        return .success(
-            AxisEstimate(
-                axis: vector,
-                sampleCount: sampleCount,
-                meanMagnitude: meanMagnitude,
-                alignmentRatio: alignmentRatio
-            )
-        )
     }
 
     private func validateCalibration(
