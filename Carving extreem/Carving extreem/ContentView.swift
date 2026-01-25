@@ -573,7 +573,7 @@ private struct CalibrationFlowView: View {
             case .stationary:
                 return "Stand still for about 2 seconds. Small sways are ok, but try to keep the boot steady so we can learn gravity and gyro bias."
             case .forward:
-                return "Glide straight for 2–3 seconds. We’ll capture a forward direction that tolerates small wobbles and twitchy movement."
+                return "Glide straight for 2–3 seconds with a gentle push. Keep your skis flat and avoid carving so we can spot the forward direction."
             case .complete:
                 return "You're ready to ride with calibrated boot axes."
             }

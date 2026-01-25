@@ -108,6 +108,8 @@ private struct Vector3 {
     var y: Double
     var z: Double
 
+    static let zero = Vector3(x: 0, y: 0, z: 0)
+
     var length: Double {
         sqrt(x * x + y * y + z * z)
     }
@@ -473,12 +475,17 @@ final class StreamClient: NSObject, ObservableObject {
             return .failure("Not enough samples collected. Try again.")
         }
 
-        guard let forwardAxis = estimateForwardAxis(
+        let forwardEstimate = estimateForwardAxis(
             from: samples,
             zAxis: pending.zAxis,
             accelScale: pending.accelScale
-        ) else {
-            return .failure("Forward direction was unclear. Glide straight and retry.")
+        )
+        let forwardAxis: Vector3
+        switch forwardEstimate {
+        case .success(let estimate):
+            forwardAxis = estimate.axis
+        case .failure(let message):
+            return .failure(message)
         }
 
         let zAxis = pending.zAxis.normalized
@@ -596,14 +603,23 @@ final class StreamClient: NSObject, ObservableObject {
         return sqrt(variance)
     }
 
+    private struct ForwardAxisEstimate {
+        let axis: Vector3
+        let sampleCount: Int
+        let meanMagnitude: Double
+        let alignmentRatio: Double
+    }
+
     private func estimateForwardAxis(
         from samples: [SensorSample],
         zAxis: Vector3,
         accelScale: Double
-    ) -> Vector3? {
+    ) -> Result<ForwardAxisEstimate, String> {
         let gHat = Vector3(x: -zAxis.x, y: -zAxis.y, z: -zAxis.z)
         var covariance = Array(repeating: Array(repeating: 0.0, count: 3), count: 3)
         var sampleCount = 0
+        var projections: [Vector3] = []
+        var magnitudeSum = 0.0
 
         for sample in samples {
             let accel = Vector3(x: sample.ax, y: sample.ay, z: sample.az)
@@ -616,6 +632,8 @@ final class StreamClient: NSObject, ObservableObject {
             let projection = linear - zAxis * Vector3.dot(linear, zAxis)
             guard projection.length > rotationEpsilon else { continue }
             sampleCount += 1
+            projections.append(projection)
+            magnitudeSum += projection.length
             covariance[0][0] += projection.x * projection.x
             covariance[0][1] += projection.x * projection.y
             covariance[0][2] += projection.x * projection.z
@@ -627,7 +645,13 @@ final class StreamClient: NSObject, ObservableObject {
             covariance[2][2] += projection.z * projection.z
         }
 
-        guard sampleCount >= 5 else { return nil }
+        guard sampleCount >= 8 else {
+            return .failure("Not enough forward motion detected. Glide for a bit longer and retry.")
+        }
+        let meanMagnitude = magnitudeSum / Double(sampleCount)
+        guard meanMagnitude >= 0.03 else {
+            return .failure("Forward acceleration was very low. Add a gentle push and keep gliding straight.")
+        }
         var vector = Vector3(x: 1, y: 0, z: 0)
         for _ in 0..<10 {
             let next = Vector3(
@@ -636,10 +660,35 @@ final class StreamClient: NSObject, ObservableObject {
                 z: covariance[2][0] * vector.x + covariance[2][1] * vector.y + covariance[2][2] * vector.z
             )
             let nextLength = next.length
-            guard nextLength > rotationEpsilon else { return nil }
+            guard nextLength > rotationEpsilon else {
+                return .failure("Forward direction was unclear. Try a smoother straight glide.")
+            }
             vector = Vector3(x: next.x / nextLength, y: next.y / nextLength, z: next.z / nextLength)
         }
-        return vector
+        let meanProjection = projections.reduce(Vector3.zero, { $0 + $1 })
+        if Vector3.dot(meanProjection, vector) < 0 {
+            vector = vector * -1
+        }
+        var parallelSum = 0.0
+        var perpendicularSum = 0.0
+        for projection in projections {
+            let parallel = Vector3.dot(projection, vector)
+            let perpendicular = (projection - vector * parallel).length
+            parallelSum += abs(parallel)
+            perpendicularSum += perpendicular
+        }
+        let alignmentRatio = parallelSum / max(perpendicularSum, rotationEpsilon)
+        guard alignmentRatio >= 1.2 else {
+            return .failure("Forward direction was noisy. Keep skis flat and avoid carving while gliding.")
+        }
+        return .success(
+            ForwardAxisEstimate(
+                axis: vector,
+                sampleCount: sampleCount,
+                meanMagnitude: meanMagnitude,
+                alignmentRatio: alignmentRatio
+            )
+        )
     }
 
     private func validateCalibration(
