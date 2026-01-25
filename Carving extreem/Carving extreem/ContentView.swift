@@ -563,7 +563,7 @@ private struct CalibrationFlowView: View {
         var title: String {
             switch self {
             case .stationary: return "Stand still"
-            case .forward: return "Tilt side to side"
+            case .forward: return "Tilt to each edge"
             case .complete: return "Calibration saved"
             }
         }
@@ -574,12 +574,17 @@ private struct CalibrationFlowView: View {
                 return "Stand still for about 2 seconds with the boot flat. Small sways are ok, but try to keep the boot steady so we can learn gravity and gyro bias."
             case .forward:
                 return """
-                Apply the flat calibration from step 1, then start step 2. Tilt the boot side to side for 2–3 seconds while keeping pitch mostly steady. We use the roll motion to lock in the transverse axis.
+                Apply the flat calibration from step 1, then start step 2. Tilt to one edge and hold for 2 seconds while keeping pitch within ±15°. Then tilt to the other edge and hold for another 2 seconds. We use the two edge holds to lock in the transverse axis.
                 """
             case .complete:
                 return "You're ready to ride with calibrated boot axes."
             }
         }
+    }
+
+    enum ForwardPhase {
+        case firstEdge
+        case secondEdge
     }
 
     @Environment(\.dismiss) private var dismiss
@@ -590,15 +595,22 @@ private struct CalibrationFlowView: View {
     @State private var stationarySamples: [SensorSample] = []
     @State private var isForwardCapturing = false
     @State private var forwardProgress: Double = 0
-    @State private var forwardStart: Date?
-    @State private var forwardSamples: [SensorSample] = []
+    @State private var forwardPhase: ForwardPhase = .firstEdge
+    @State private var forwardHoldStart: Date?
+    @State private var forwardHoldDirection: Double?
+    @State private var edgeOneSamples: [SensorSample] = []
+    @State private var edgeTwoSamples: [SensorSample] = []
     @State private var calibrationError: String?
     @State private var livePitch: Double = 0
     @State private var liveRoll: Double = 0
+    @State private var hasFilteredPitchRoll = false
     let client: StreamClient
     let sensorLabel: String
     private let stationaryDuration: TimeInterval = 2.0
-    private let forwardDuration: TimeInterval = 2.5
+    private let forwardHoldDuration: TimeInterval = 2.0
+    private let pitchTolerance: Double = 15.0
+    private let rollHoldThreshold: Double = 20.0
+    private let calibrationFilterAlpha: Double = 0.1
 
     var body: some View {
         NavigationStack {
@@ -629,8 +641,14 @@ private struct CalibrationFlowView: View {
         .onReceive(client.$latestSample) { sample in
             guard let sample else { return }
             let pitchRoll = client.pitchRoll(from: sample)
-            livePitch = pitchRoll.pitch
-            liveRoll = pitchRoll.roll
+            if !hasFilteredPitchRoll {
+                livePitch = pitchRoll.pitch
+                liveRoll = pitchRoll.roll
+                hasFilteredPitchRoll = true
+            } else {
+                livePitch = livePitch * (1 - calibrationFilterAlpha) + pitchRoll.pitch * calibrationFilterAlpha
+                liveRoll = liveRoll * (1 - calibrationFilterAlpha) + pitchRoll.roll * calibrationFilterAlpha
+            }
             handleSample(sample)
         }
         .alert("Calibration failed", isPresented: Binding(get: { calibrationError != nil }, set: { _ in calibrationError = nil })) {
@@ -668,7 +686,7 @@ private struct CalibrationFlowView: View {
                             Text("Target")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
-                            Text(step == .forward ? "Pitch 0°" : "Pitch 0°")
+                            Text(step == .forward ? "Pitch ±15°" : "Pitch 0°")
                             Text(step == .forward ? "Roll ±25°" : "Roll 0°")
                         }
                     }
@@ -676,7 +694,7 @@ private struct CalibrationFlowView: View {
                     .foregroundStyle(.secondary)
 
                     Text(step == .forward
-                         ? "Start from the flat pose, then rock edge-to-edge while keeping pitch near 0°."
+                         ? "Tilt to one edge, hold steady, then repeat on the opposite edge while keeping pitch near 0°."
                          : "Hold the boot steady and keep pitch/roll near zero.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -708,13 +726,22 @@ private struct CalibrationFlowView: View {
             case .forward:
                 if isForwardCapturing {
                     VStack(alignment: .leading, spacing: 12) {
-                        ProgressView(value: forwardProgress)
-                        Text("Capturing side-to-side tilt… \(Int(forwardProgress * 100))%")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(forwardPhase == .firstEdge ? "Edge 1 hold" : "Edge 2 hold")
+                                .font(.subheadline.weight(.semibold))
+                            ProgressView(value: forwardProgress)
+                            Text(statusTextForForwardCapture())
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        if forwardPhase == .secondEdge {
+                            Text("Edge 1 captured ✓")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 } else {
-                    Button("Start 3s tilt capture") {
+                    Button("Start edge holds") {
                         handlePrimaryAction()
                     }
                     .buttonStyle(.borderedProminent)
@@ -760,8 +787,11 @@ private struct CalibrationFlowView: View {
     private func startForwardCalibration() {
         isForwardCapturing = true
         forwardProgress = 0
-        forwardSamples = []
-        forwardStart = Date()
+        forwardPhase = .firstEdge
+        forwardHoldStart = nil
+        forwardHoldDirection = nil
+        edgeOneSamples = []
+        edgeTwoSamples = []
     }
 
     private func handleStationarySample(_ sample: SensorSample) {
@@ -781,19 +811,82 @@ private struct CalibrationFlowView: View {
     }
 
     private func handleForwardSample(_ sample: SensorSample) {
-        guard isForwardCapturing, let start = forwardStart else { return }
-        forwardSamples.append(sample)
-        let elapsed = Date().timeIntervalSince(start)
-        forwardProgress = min(max(elapsed / forwardDuration, 0), 1)
-        guard elapsed >= forwardDuration else { return }
-        let result = client.captureForwardCalibration(samples: forwardSamples)
-        isForwardCapturing = false
-        switch result {
-        case .success:
-            step = .complete
-        case .failure(let message):
-            calibrationError = message
+        guard isForwardCapturing else { return }
+        let pitchInRange = abs(livePitch) <= pitchTolerance
+        let rollMagnitude = abs(liveRoll)
+        let rollDirection = liveRoll >= 0 ? 1.0 : -1.0
+
+        switch forwardPhase {
+        case .firstEdge:
+            guard pitchInRange, rollMagnitude >= rollHoldThreshold else {
+                resetForwardHold()
+                return
+            }
+            if forwardHoldDirection == nil || forwardHoldDirection != rollDirection || forwardHoldStart == nil {
+                forwardHoldDirection = rollDirection
+                forwardHoldStart = Date()
+                edgeOneSamples = []
+            }
+            edgeOneSamples.append(sample)
+            updateForwardProgress()
+            if forwardProgress >= 1 {
+                forwardPhase = .secondEdge
+                forwardHoldStart = nil
+                forwardProgress = 0
+            }
+        case .secondEdge:
+            guard let firstDirection = forwardHoldDirection else { return }
+            let requiredDirection = firstDirection * -1
+            guard pitchInRange, rollMagnitude >= rollHoldThreshold, rollDirection == requiredDirection else {
+                resetForwardHold()
+                return
+            }
+            if forwardHoldStart == nil {
+                forwardHoldStart = Date()
+                edgeTwoSamples = []
+            }
+            edgeTwoSamples.append(sample)
+            updateForwardProgress()
+            if forwardProgress >= 1 {
+                let result = client.captureForwardCalibration(
+                    edgeOneSamples: edgeOneSamples,
+                    edgeTwoSamples: edgeTwoSamples
+                )
+                isForwardCapturing = false
+                switch result {
+                case .success:
+                    step = .complete
+                case .failure(let message):
+                    calibrationError = message
+                }
+            }
         }
+    }
+
+    private func updateForwardProgress() {
+        guard let start = forwardHoldStart else {
+            forwardProgress = 0
+            return
+        }
+        let elapsed = Date().timeIntervalSince(start)
+        forwardProgress = min(max(elapsed / forwardHoldDuration, 0), 1)
+    }
+
+    private func resetForwardHold() {
+        forwardHoldStart = nil
+        forwardProgress = 0
+        switch forwardPhase {
+        case .firstEdge:
+            edgeOneSamples = []
+        case .secondEdge:
+            edgeTwoSamples = []
+        }
+    }
+
+    private func statusTextForForwardCapture() -> String {
+        let pitchStatus = abs(livePitch) <= pitchTolerance ? "Pitch ok" : "Keep pitch within ±\(Int(pitchTolerance))°"
+        let rollStatus = abs(liveRoll) >= rollHoldThreshold ? "Hold the edge" : "Tilt more to the edge"
+        return "\(pitchStatus) • \(rollStatus)"
     }
 }
 
