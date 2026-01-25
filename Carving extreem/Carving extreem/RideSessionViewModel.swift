@@ -57,7 +57,6 @@ final class RideSessionViewModel: ObservableObject {
     init() {
         let storedThreshold = UserDefaults.standard.object(forKey: edgeThresholdKey) as? Double
         edgeCalloutThreshold = storedThreshold ?? defaultEdgeThreshold
-        configureAudioSession()
     }
 
     func startRun(isCalibrated: Bool) {
@@ -341,7 +340,6 @@ final class RideSessionViewModel: ObservableObject {
     }
 
     private func speak(_ text: String) {
-        configureAudioSession()
         let utterance = AVSpeechUtterance(string: text)
         if let siriVoice = AVSpeechSynthesisVoice.speechVoices().first(where: { $0.name.contains("Siri") }) {
             utterance.voice = siriVoice

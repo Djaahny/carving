@@ -159,6 +159,14 @@ private struct PendingCalibration {
     let meanGyro: Vector3
 }
 
+private struct PendingForwardCalibration {
+    let xAxis: Vector3
+    let zAxis: Vector3
+    let accelScale: Double
+    let meanAccel: Vector3
+    let gyroBias: Vector3
+}
+
 enum CalibrationResult {
     case success
     case failure(String)
@@ -198,6 +206,8 @@ final class StreamClient: NSObject, ObservableObject {
     private let alignmentReferenceThreshold = 0.75
     private let edgeHoldMinSampleCount = 10
     private let edgeHoldMinSeparationDegrees = 25.0
+    private let forefootHoldMinSampleCount = 10
+    private let forefootMinPitchDegrees = 8.0
 
     private var centralManager: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -205,6 +215,7 @@ final class StreamClient: NSObject, ObservableObject {
     private var smoothedEdgeAngle: Double?
     private var smoothedSignedEdgeAngle: Double?
     private var pendingStationaryCalibration: PendingCalibration?
+    private var pendingForwardCalibration: PendingForwardCalibration?
 
     init(deviceName: String = "Carving-Extreem", storageSuffix: String) {
         self.deviceName = deviceName
@@ -463,6 +474,7 @@ final class StreamClient: NSObject, ObservableObject {
             meanAccel: meanAccel,
             meanGyro: meanGyro
         )
+        pendingForwardCalibration = nil
 
         var state = calibrationState
         state.gyroBias = [meanGyro.x, meanGyro.y, meanGyro.z]
@@ -523,6 +535,57 @@ final class StreamClient: NSObject, ObservableObject {
             [zAxis.x, zAxis.y, zAxis.z]
         ]
 
+        var state = calibrationState
+        state.rotationMatrix = rotationMatrix
+        state.gyroBias = [pending.gyroBias.x, pending.gyroBias.y, pending.gyroBias.z]
+        state.accelScale = pending.accelScale
+        state.zAxis = [zAxis.x, zAxis.y, zAxis.z]
+        state.isCalibrated = false
+        saveCalibration(state)
+        pendingForwardCalibration = PendingForwardCalibration(
+            xAxis: correctedXAxis.normalized,
+            zAxis: zAxis,
+            accelScale: pending.accelScale,
+            meanAccel: pending.meanAccel,
+            gyroBias: pending.gyroBias
+        )
+        return .success
+    }
+
+    func captureForefootCalibration(forefootSamples: [SensorSample]) -> CalibrationResult {
+        guard let pending = pendingForwardCalibration else {
+            return .failure("Finish the edge hold step first, then start the forefoot lift.")
+        }
+        guard forefootSamples.count >= forefootHoldMinSampleCount else {
+            return .failure("Not enough samples for the forefoot hold. Keep the toe lifted for 2 seconds.")
+        }
+
+        let meanAccel = meanAccel(from: forefootSamples) * pending.accelScale
+        let candidateYAxis = Vector3.cross(pending.zAxis, pending.xAxis).normalized
+        let candidateMatrix = [
+            [pending.xAxis.x, pending.xAxis.y, pending.xAxis.z],
+            [candidateYAxis.x, candidateYAxis.y, candidateYAxis.z],
+            [pending.zAxis.x, pending.zAxis.y, pending.zAxis.z]
+        ]
+        let bootAccel = applyRotation(candidateMatrix, to: meanAccel)
+        let pitch = atan2(bootAccel.x, sqrt(bootAccel.y * bootAccel.y + bootAccel.z * bootAccel.z)) * radiansToDegrees
+        guard abs(pitch) >= forefootMinPitchDegrees else {
+            return .failure("Lift the forefoot a bit more and hold it steady for 2 seconds.")
+        }
+
+        var xAxis = pending.xAxis
+        if bootAccel.x > 0 {
+            xAxis = xAxis * -1
+        }
+        let zAxis = pending.zAxis.normalized
+        let yAxis = Vector3.cross(zAxis, xAxis).normalized
+        let correctedXAxis = Vector3.cross(yAxis, zAxis)
+        let rotationMatrix = [
+            [correctedXAxis.x, correctedXAxis.y, correctedXAxis.z],
+            [yAxis.x, yAxis.y, yAxis.z],
+            [zAxis.x, zAxis.y, zAxis.z]
+        ]
+
         if let validationFailure = validateCalibration(
             rotationMatrix: rotationMatrix,
             accelScale: pending.accelScale,
@@ -539,6 +602,7 @@ final class StreamClient: NSObject, ObservableObject {
         state.zAxis = [zAxis.x, zAxis.y, zAxis.z]
         state.isCalibrated = true
         saveCalibration(state)
+        pendingForwardCalibration = nil
         pendingStationaryCalibration = nil
         return .success
     }
