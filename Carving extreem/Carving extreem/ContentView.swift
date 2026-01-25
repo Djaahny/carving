@@ -563,7 +563,7 @@ private struct CalibrationFlowView: View {
         var title: String {
             switch self {
             case .stationary: return "Stand still"
-            case .forward: return "Glide straight"
+            case .forward: return "Tilt side to side"
             case .complete: return "Calibration saved"
             }
         }
@@ -574,7 +574,7 @@ private struct CalibrationFlowView: View {
                 return "Stand still for about 2 seconds with the boot flat. Small sways are ok, but try to keep the boot steady so we can learn gravity and gyro bias."
             case .forward:
                 return """
-                Apply the flat calibration from step 1, then start step 2. Glide straight for 2–3 seconds with the boot mostly flat. Small pitch/roll changes are ok; just avoid hard carving so we can spot the forward direction.
+                Apply the flat calibration from step 1, then start step 2. Tilt the boot side to side for 2–3 seconds while keeping pitch mostly steady. We use the roll motion to lock in the transverse axis.
                 """
             case .complete:
                 return "You're ready to ride with calibrated boot axes."
@@ -668,15 +668,15 @@ private struct CalibrationFlowView: View {
                             Text("Target")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
-                            Text(step == .forward ? "Pitch ±15°" : "Pitch 0°")
-                            Text(step == .forward ? "Roll ±15°" : "Roll 0°")
+                            Text(step == .forward ? "Pitch 0°" : "Pitch 0°")
+                            Text(step == .forward ? "Roll ±25°" : "Roll 0°")
                         }
                     }
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
                     Text(step == .forward
-                         ? "Start from the flat pose, then glide straight while keeping pitch/roll within about ±15°."
+                         ? "Start from the flat pose, then rock edge-to-edge while keeping pitch near 0°."
                          : "Hold the boot steady and keep pitch/roll near zero.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -709,12 +709,12 @@ private struct CalibrationFlowView: View {
                 if isForwardCapturing {
                     VStack(alignment: .leading, spacing: 12) {
                         ProgressView(value: forwardProgress)
-                        Text("Capturing forward glide… \(Int(forwardProgress * 100))%")
+                        Text("Capturing side-to-side tilt… \(Int(forwardProgress * 100))%")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Button("Start 3s glide capture") {
+                    Button("Start 3s tilt capture") {
                         handlePrimaryAction()
                     }
                     .buttonStyle(.borderedProminent)
