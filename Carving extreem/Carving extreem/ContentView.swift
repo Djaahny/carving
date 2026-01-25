@@ -558,12 +558,14 @@ private struct CalibrationFlowView: View {
     enum Step: Int, CaseIterable {
         case stationary
         case forward
+        case forefoot
         case complete
 
         var title: String {
             switch self {
             case .stationary: return "Stand still"
             case .forward: return "Tilt to each edge"
+            case .forefoot: return "Lift the forefoot"
             case .complete: return "Calibration saved"
             }
         }
@@ -575,6 +577,10 @@ private struct CalibrationFlowView: View {
             case .forward:
                 return """
                 Apply the flat calibration from step 1, then start step 2. Tilt to one edge and hold for 2 seconds while keeping pitch within ±15°. Then tilt to the other edge and hold for another 2 seconds. We use the two edge holds to lock in the transverse axis.
+                """
+            case .forefoot:
+                return """
+                Step 3: lift the forefoot into the air while keeping the heel down. Hold the position for 2 seconds so we can determine front vs. back. The exact angle doesn't matter—just make sure the boot is clearly tipped forward.
                 """
             case .complete:
                 return "You're ready to ride with calibrated boot axes."
@@ -600,6 +606,10 @@ private struct CalibrationFlowView: View {
     @State private var forwardHoldDirection: Double?
     @State private var edgeOneSamples: [SensorSample] = []
     @State private var edgeTwoSamples: [SensorSample] = []
+    @State private var isForefootCapturing = false
+    @State private var forefootProgress: Double = 0
+    @State private var forefootHoldStart: Date?
+    @State private var forefootSamples: [SensorSample] = []
     @State private var calibrationError: String?
     @State private var livePitch: Double = 0
     @State private var liveRoll: Double = 0
@@ -610,6 +620,7 @@ private struct CalibrationFlowView: View {
     private let forwardHoldDuration: TimeInterval = 2.0
     private let pitchTolerance: Double = 15.0
     private let rollHoldThreshold: Double = 20.0
+    private let forefootPitchThreshold: Double = 8.0
     private let calibrationFilterAlpha: Double = 0.1
 
     var body: some View {
@@ -686,16 +697,23 @@ private struct CalibrationFlowView: View {
                             Text("Target")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
-                            Text(step == .forward ? "Pitch ±15°" : "Pitch 0°")
-                            Text(step == .forward ? "Roll ±25°" : "Roll 0°")
+                            switch step {
+                            case .forward:
+                                Text("Pitch ±15°")
+                                Text("Roll ±25°")
+                            case .forefoot:
+                                Text("Pitch: lift forefoot")
+                                Text("Roll: any")
+                            default:
+                                Text("Pitch 0°")
+                                Text("Roll 0°")
+                            }
                         }
                     }
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
-                    Text(step == .forward
-                         ? "Tilt to one edge, hold steady, then repeat on the opposite edge while keeping pitch near 0°."
-                         : "Hold the boot steady and keep pitch/roll near zero.")
+                    Text(calibrationVisualHint)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -746,6 +764,20 @@ private struct CalibrationFlowView: View {
                     }
                     .buttonStyle(.borderedProminent)
                 }
+            case .forefoot:
+                if isForefootCapturing {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ProgressView(value: forefootProgress)
+                        Text(statusTextForForefootCapture())
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Button("Start forefoot hold") {
+                        handlePrimaryAction()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
             case .complete:
                 Button("Done") {
                     handlePrimaryAction()
@@ -761,6 +793,8 @@ private struct CalibrationFlowView: View {
             startStationaryCalibration()
         case .forward:
             startForwardCalibration()
+        case .forefoot:
+            startForefootCalibration()
         case .complete:
             dismiss()
         }
@@ -772,6 +806,8 @@ private struct CalibrationFlowView: View {
             handleStationarySample(sample)
         case .forward:
             handleForwardSample(sample)
+        case .forefoot:
+            handleForefootSample(sample)
         default:
             break
         }
@@ -855,10 +891,41 @@ private struct CalibrationFlowView: View {
                 isForwardCapturing = false
                 switch result {
                 case .success:
-                    step = .complete
+                    step = .forefoot
                 case .failure(let message):
                     calibrationError = message
                 }
+            }
+        }
+    }
+
+    private func startForefootCalibration() {
+        isForefootCapturing = true
+        forefootProgress = 0
+        forefootHoldStart = nil
+        forefootSamples = []
+    }
+
+    private func handleForefootSample(_ sample: SensorSample) {
+        guard isForefootCapturing else { return }
+        guard abs(livePitch) >= forefootPitchThreshold else {
+            resetForefootHold()
+            return
+        }
+        if forefootHoldStart == nil {
+            forefootHoldStart = Date()
+            forefootSamples = []
+        }
+        forefootSamples.append(sample)
+        updateForefootProgress()
+        if forefootProgress >= 1 {
+            let result = client.captureForefootCalibration(forefootSamples: forefootSamples)
+            isForefootCapturing = false
+            switch result {
+            case .success:
+                step = .complete
+            case .failure(let message):
+                calibrationError = message
             }
         }
     }
@@ -872,6 +939,15 @@ private struct CalibrationFlowView: View {
         forwardProgress = min(max(elapsed / forwardHoldDuration, 0), 1)
     }
 
+    private func updateForefootProgress() {
+        guard let start = forefootHoldStart else {
+            forefootProgress = 0
+            return
+        }
+        let elapsed = Date().timeIntervalSince(start)
+        forefootProgress = min(max(elapsed / forwardHoldDuration, 0), 1)
+    }
+
     private func resetForwardHold() {
         forwardHoldStart = nil
         forwardProgress = 0
@@ -883,10 +959,34 @@ private struct CalibrationFlowView: View {
         }
     }
 
+    private func resetForefootHold() {
+        forefootHoldStart = nil
+        forefootProgress = 0
+        forefootSamples = []
+    }
+
     private func statusTextForForwardCapture() -> String {
         let pitchStatus = abs(livePitch) <= pitchTolerance ? "Pitch ok" : "Keep pitch within ±\(Int(pitchTolerance))°"
         let rollStatus = abs(liveRoll) >= rollHoldThreshold ? "Hold the edge" : "Tilt more to the edge"
         return "\(pitchStatus) • \(rollStatus)"
+    }
+
+    private func statusTextForForefootCapture() -> String {
+        let pitchStatus = abs(livePitch) >= forefootPitchThreshold
+            ? "Forefoot lifted"
+            : "Lift the forefoot"
+        return "\(pitchStatus) • Hold steady"
+    }
+
+    private var calibrationVisualHint: String {
+        switch step {
+        case .forward:
+            return "Tilt to one edge, hold steady, then repeat on the opposite edge while keeping pitch near 0°."
+        case .forefoot:
+            return "Lift the forefoot while keeping the heel down. Hold steady for 2 seconds."
+        default:
+            return "Hold the boot steady and keep pitch/roll near zero."
+        }
     }
 }
 
