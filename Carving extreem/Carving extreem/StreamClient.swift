@@ -438,12 +438,19 @@ final class StreamClient: NSObject, ObservableObject {
         let accelStdDev = standardDeviation(values: accelMagnitude)
         let gyroStdDev = standardDeviation(values: gyroMagnitude)
         guard accelStdDev <= stillnessAccelStdDevThreshold, gyroStdDev <= stillnessGyroStdDevThreshold else {
-            return .failure("Too much movement detected. Keep the boot still for 2 seconds (no stamping or sliding).")
+            return .failure(
+                "Too much movement detected. Keep the boot still for 2 seconds (no stamping or sliding). " +
+                "Accel σ \(Self.formatDecimal(accelStdDev)) (max \(Self.formatDecimal(stillnessAccelStdDevThreshold))), " +
+                "gyro σ \(Self.formatDecimal(gyroStdDev)) (max \(Self.formatDecimal(stillnessGyroStdDevThreshold)))."
+            )
         }
 
         let accelNorm = meanAccel.length
         guard accelNorm > rotationEpsilon else {
-            return .failure("Gravity signal was too small. Set the boot flat on the snow and try again.")
+            return .failure(
+                "Gravity signal was too small. Set the boot flat on the snow and try again. " +
+                "Magnitude \(Self.formatDecimal(accelNorm)) (min \(Self.formatDecimal(rotationEpsilon)))."
+            )
         }
         let accelScale = 1.0 / accelNorm
         let gHat = meanAccel.normalized
@@ -495,12 +502,18 @@ final class StreamClient: NSObject, ObservableObject {
         let zAxis = pending.zAxis.normalized
         let xTemp = forwardAxis - zAxis * Vector3.dot(forwardAxis, zAxis)
         guard xTemp.length > rotationEpsilon else {
-            return .failure("Forward direction looked vertical. Keep the boot flat and glide straight.")
+            return .failure(
+                "Forward direction looked vertical. Keep the boot flat and glide straight. " +
+                "Projection \(Self.formatDecimal(xTemp.length)) (min \(Self.formatDecimal(rotationEpsilon)))."
+            )
         }
         let xAxis = xTemp.normalized
         let crossMagnitude = Vector3.cross(zAxis, xAxis).length
         guard crossMagnitude > 0.1 else {
-            return .failure("Forward axis was too close to gravity. Keep the ski flat and avoid tilting.")
+            return .failure(
+                "Forward axis was too close to gravity. Keep the ski flat and avoid tilting. " +
+                "Cross magnitude \(Self.formatDecimal(crossMagnitude)) (min 0.100)."
+            )
         }
         let yAxis = Vector3.cross(zAxis, xAxis).normalized
         let correctedXAxis = Vector3.cross(yAxis, zAxis)
@@ -615,21 +628,30 @@ final class StreamClient: NSObject, ObservableObject {
     }
 
     private enum ForwardAxisError: LocalizedError {
-        case insufficientMotion
-        case lowAcceleration
+        case insufficientMotion(sampleCount: Int, minSampleCount: Int)
+        case lowAcceleration(meanMagnitude: Double, minMagnitude: Double)
         case unclearDirection
-        case noisyDirection
+        case noisyDirection(alignmentRatio: Double, minAlignmentRatio: Double)
 
         var errorDescription: String? {
             switch self {
-            case .insufficientMotion:
-                return "We didn't detect enough forward motion. Glide a little longer before stopping."
-            case .lowAcceleration:
-                return "Forward acceleration was very low. Give a gentle push and keep gliding straight."
+            case .insufficientMotion(let sampleCount, let minSampleCount):
+                return """
+                We didn't detect enough forward motion. Glide a little longer before stopping. \
+                Samples \(sampleCount) (min \(minSampleCount)).
+                """
+            case .lowAcceleration(let meanMagnitude, let minMagnitude):
+                return """
+                Forward acceleration was very low. Give a gentle push and keep gliding straight. \
+                Mean \(StreamClient.formatDecimal(meanMagnitude)) (min \(StreamClient.formatDecimal(minMagnitude))).
+                """
             case .unclearDirection:
                 return "Forward direction was unclear. Try a smoother straight glide with skis flat."
-            case .noisyDirection:
-                return "Forward direction was noisy. Keep skis flat and avoid carving during the glide."
+            case .noisyDirection(let alignmentRatio, let minAlignmentRatio):
+                return """
+                Forward direction was noisy. Keep skis flat and avoid carving during the glide. \
+                Alignment \(StreamClient.formatDecimal(alignmentRatio)) (min \(StreamClient.formatDecimal(minAlignmentRatio))).
+                """
             }
         }
     }
@@ -677,11 +699,11 @@ final class StreamClient: NSObject, ObservableObject {
         }
 
         guard sampleCount >= forwardMinSampleCount else {
-            return .failure(.insufficientMotion)
+            return .failure(.insufficientMotion(sampleCount: sampleCount, minSampleCount: forwardMinSampleCount))
         }
         let meanMagnitude = magnitudeSum / Double(sampleCount)
         guard meanMagnitude >= forwardMinMagnitude else {
-            return .failure(.lowAcceleration)
+            return .failure(.lowAcceleration(meanMagnitude: meanMagnitude, minMagnitude: forwardMinMagnitude))
         }
         var vector = Vector3(x: 1, y: 0, z: 0)
         for _ in 0..<10 {
@@ -710,7 +732,7 @@ final class StreamClient: NSObject, ObservableObject {
         }
         let alignmentRatio = parallelSum / max(perpendicularSum, rotationEpsilon)
         guard alignmentRatio >= forwardMinAlignmentRatio else {
-            return .failure(.noisyDirection)
+            return .failure(.noisyDirection(alignmentRatio: alignmentRatio, minAlignmentRatio: forwardMinAlignmentRatio))
         }
         return .success(
             ForwardAxisEstimate(
@@ -735,14 +757,21 @@ final class StreamClient: NSObject, ObservableObject {
         )
         let accelBoot = applyRotation(rotationMatrix, to: scaledAccel)
         if abs(accelBoot.z - 1.0) > 0.15 || abs(accelBoot.x) > 0.15 || abs(accelBoot.y) > 0.15 {
-            return "Calibration check failed. Try holding the boot still during step 1."
+            return """
+            Calibration check failed. Try holding the boot still during step 1. \
+            Ax \(Self.formatDecimal(accelBoot.x)), Ay \(Self.formatDecimal(accelBoot.y)), Az \(Self.formatDecimal(accelBoot.z)) (target 0, 0, 1).
+            """
         }
         let gyroBoot = applyRotation(rotationMatrix, to: gyroBias)
         let gyroMagnitude = gyroBoot.length
         if gyroMagnitude > 3.0 {
-            return "Gyro bias looks too high. Re-run the stationary step."
+            return "Gyro bias looks too high. Re-run the stationary step. Magnitude \(Self.formatDecimal(gyroMagnitude)) (max 3.000)."
         }
         return nil
+    }
+
+    private static func formatDecimal(_ value: Double) -> String {
+        String(format: "%.3f", value)
     }
 }
 

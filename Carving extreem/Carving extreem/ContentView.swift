@@ -571,9 +571,11 @@ private struct CalibrationFlowView: View {
         var message: String {
             switch self {
             case .stationary:
-                return "Stand still for about 2 seconds. Small sways are ok, but try to keep the boot steady so we can learn gravity and gyro bias."
+                return "Stand still for about 2 seconds with the boot flat. Small sways are ok, but try to keep the boot steady so we can learn gravity and gyro bias."
             case .forward:
-                return "Glide straight for 2–3 seconds with a gentle push. Keep your skis flat and avoid carving so we can spot the forward direction."
+                return """
+                Apply the flat calibration from step 1, then start step 2. Gently tap your front foot while keeping your heel down, roll side to side, and then glide straight for 2–3 seconds. Keep the boot flat and avoid carving so we can spot the forward direction.
+                """
             case .complete:
                 return "You're ready to ride with calibrated boot axes."
             }
@@ -674,7 +676,7 @@ private struct CalibrationFlowView: View {
                     .foregroundStyle(.secondary)
 
                     Text(step == .forward
-                         ? "Keep the boot flat and glide straight to keep pitch/roll near zero."
+                         ? "Start from the flat pose, tap your front foot with heel down, roll side to side, then glide straight while keeping pitch/roll near zero."
                          : "Hold the boot steady and keep pitch/roll near zero.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
