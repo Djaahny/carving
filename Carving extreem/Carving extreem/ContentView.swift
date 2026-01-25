@@ -591,6 +591,8 @@ private struct CalibrationFlowView: View {
     @State private var forwardStart: Date?
     @State private var forwardSamples: [SensorSample] = []
     @State private var calibrationError: String?
+    @State private var livePitch: Double = 0
+    @State private var liveRoll: Double = 0
     let client: StreamClient
     let sensorLabel: String
     private let stationaryDuration: TimeInterval = 2.0
@@ -604,6 +606,8 @@ private struct CalibrationFlowView: View {
                 Text(step.message)
                     .font(.body)
                     .foregroundStyle(.secondary)
+
+                calibrationVisual
 
                 Spacer()
 
@@ -622,12 +626,63 @@ private struct CalibrationFlowView: View {
         }
         .onReceive(client.$latestSample) { sample in
             guard let sample else { return }
+            let pitchRoll = client.pitchRoll(from: sample)
+            livePitch = pitchRoll.pitch
+            liveRoll = pitchRoll.roll
             handleSample(sample)
         }
         .alert("Calibration failed", isPresented: Binding(get: { calibrationError != nil }, set: { _ in calibrationError = nil })) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(calibrationError ?? "Unknown error")
+        }
+    }
+
+    private var calibrationVisual: some View {
+        Group {
+            if step == .complete {
+                EmptyView()
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    Boot3DView(pitchAngle: livePitch, rollAngle: liveRoll)
+                        .frame(height: 180)
+                        .frame(maxWidth: .infinity)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16)
+                                .fill(Color(.systemBackground))
+                                .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 4)
+                        )
+
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Live")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text("Pitch \(Int(livePitch))°")
+                            Text("Roll \(Int(liveRoll))°")
+                        }
+                        Spacer()
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Target")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text("Pitch 0°")
+                            Text("Roll 0°")
+                        }
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                    Text(step == .forward
+                         ? "Keep the boot flat and glide straight to keep pitch/roll near zero."
+                         : "Hold the boot steady and keep pitch/roll near zero.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+                .background(Color(.secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+            }
         }
     }
 
