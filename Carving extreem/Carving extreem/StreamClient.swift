@@ -683,12 +683,13 @@ final class StreamClient: NSObject, ObservableObject {
         )
         let accelBoot = applyRotation(rotationMatrix, to: scaledAccel)
         let stationaryAccelTolerance = 0.25
-        if abs(accelBoot.z - 1.0) > stationaryAccelTolerance
+        let accelBootAbsZ = abs(accelBoot.z)
+        if abs(accelBootAbsZ - 1.0) > stationaryAccelTolerance
             || abs(accelBoot.x) > stationaryAccelTolerance
             || abs(accelBoot.y) > stationaryAccelTolerance {
             return """
             Calibration check failed. Try holding the boot still during step 1. \
-            Ax \(Self.formatDecimal(accelBoot.x)), Ay \(Self.formatDecimal(accelBoot.y)), Az \(Self.formatDecimal(accelBoot.z)) (target 0, 0, 1 ±\(Self.formatDecimal(stationaryAccelTolerance))).
+            Ax \(Self.formatDecimal(accelBoot.x)), Ay \(Self.formatDecimal(accelBoot.y)), Az \(Self.formatDecimal(accelBoot.z)) (target 0, 0, ±1 ±\(Self.formatDecimal(stationaryAccelTolerance))).
             """
         }
         let gyroBoot = applyRotation(rotationMatrix, to: gyroBias)
