@@ -770,7 +770,7 @@ final class StreamClient: NSObject, ObservableObject {
         return nil
     }
 
-    private static func formatDecimal(_ value: Double) -> String {
+    nonisolated private static func formatDecimal(_ value: Double) -> String {
         String(format: "%.3f", value)
     }
 }
