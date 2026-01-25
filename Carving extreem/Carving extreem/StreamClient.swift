@@ -376,7 +376,7 @@ final class StreamClient: NSObject, ObservableObject {
 
     private func computeEdgeAngles(from sample: SensorSample) -> (signed: Double, magnitude: Double) {
         guard let accel = bootFrame(from: sample)?.accel else { return (0, 0) }
-        let roll = atan2(accel.y, accel.z) * radiansToDegrees
+        let roll = normalizedRollDegrees(from: accel)
         let signed = min(max(roll, -90), 90)
         let magnitude = min(max(abs(roll), 0), 90)
         return (signed, magnitude)
@@ -545,9 +545,20 @@ final class StreamClient: NSObject, ObservableObject {
     func pitchRoll(from sample: SensorSample) -> (pitch: Double, roll: Double) {
         let accel = bootFrame(from: sample)?.accel
             ?? Vector3(x: sample.ax, y: sample.ay, z: sample.az)
-        let roll = atan2(accel.y, accel.z) * radiansToDegrees
+        let roll = normalizedRollDegrees(from: accel)
         let pitch = atan2(accel.x, sqrt(accel.y * accel.y + accel.z * accel.z)) * radiansToDegrees
         return (pitch, roll)
+    }
+
+    private func normalizedRollDegrees(from accel: Vector3) -> Double {
+        let rawRoll = atan2(accel.y, accel.z) * radiansToDegrees
+        if rawRoll > 90 {
+            return rawRoll - 180
+        }
+        if rawRoll < -90 {
+            return rawRoll + 180
+        }
+        return rawRoll
     }
 
     func calibratedSample(from sample: SensorSample) -> SensorSample {
