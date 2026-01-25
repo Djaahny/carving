@@ -484,8 +484,8 @@ final class StreamClient: NSObject, ObservableObject {
         switch forwardEstimate {
         case .success(let estimate):
             forwardAxis = estimate.axis
-        case .failure(let message):
-            return .failure(message)
+        case .failure(let error):
+            return .failure(error.localizedDescription)
         }
 
         let zAxis = pending.zAxis.normalized
@@ -610,11 +610,31 @@ final class StreamClient: NSObject, ObservableObject {
         let alignmentRatio: Double
     }
 
+    private enum ForwardAxisError: LocalizedError {
+        case insufficientMotion
+        case lowAcceleration
+        case unclearDirection
+        case noisyDirection
+
+        var errorDescription: String? {
+            switch self {
+            case .insufficientMotion:
+                return "Not enough forward motion detected. Glide for a bit longer and retry."
+            case .lowAcceleration:
+                return "Forward acceleration was very low. Add a gentle push and keep gliding straight."
+            case .unclearDirection:
+                return "Forward direction was unclear. Try a smoother straight glide."
+            case .noisyDirection:
+                return "Forward direction was noisy. Keep skis flat and avoid carving while gliding."
+            }
+        }
+    }
+
     private func estimateForwardAxis(
         from samples: [SensorSample],
         zAxis: Vector3,
         accelScale: Double
-    ) -> Result<ForwardAxisEstimate, String> {
+    ) -> Result<ForwardAxisEstimate, ForwardAxisError> {
         let gHat = Vector3(x: -zAxis.x, y: -zAxis.y, z: -zAxis.z)
         var covariance = Array(repeating: Array(repeating: 0.0, count: 3), count: 3)
         var sampleCount = 0
@@ -646,11 +666,11 @@ final class StreamClient: NSObject, ObservableObject {
         }
 
         guard sampleCount >= 8 else {
-            return .failure("Not enough forward motion detected. Glide for a bit longer and retry.")
+            return .failure(.insufficientMotion)
         }
         let meanMagnitude = magnitudeSum / Double(sampleCount)
         guard meanMagnitude >= 0.03 else {
-            return .failure("Forward acceleration was very low. Add a gentle push and keep gliding straight.")
+            return .failure(.lowAcceleration)
         }
         var vector = Vector3(x: 1, y: 0, z: 0)
         for _ in 0..<10 {
@@ -661,7 +681,7 @@ final class StreamClient: NSObject, ObservableObject {
             )
             let nextLength = next.length
             guard nextLength > rotationEpsilon else {
-                return .failure("Forward direction was unclear. Try a smoother straight glide.")
+                return .failure(.unclearDirection)
             }
             vector = Vector3(x: next.x / nextLength, y: next.y / nextLength, z: next.z / nextLength)
         }
@@ -679,7 +699,7 @@ final class StreamClient: NSObject, ObservableObject {
         }
         let alignmentRatio = parallelSum / max(perpendicularSum, rotationEpsilon)
         guard alignmentRatio >= 1.2 else {
-            return .failure("Forward direction was noisy. Keep skis flat and avoid carving while gliding.")
+            return .failure(.noisyDirection)
         }
         return .success(
             ForwardAxisEstimate(
