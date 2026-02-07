@@ -18,56 +18,172 @@ enum SensorMode: String, Codable, CaseIterable, Identifiable {
 struct BackgroundSample: Codable, Identifiable {
     let id: UUID
     let timestamp: Date
-    let edgeAngle: Double
-    let side: SensorSide
+    let leftEdgeAngle: Double?
+    let rightEdgeAngle: Double?
 
-    init(timestamp: Date, edgeAngle: Double, side: SensorSide) {
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case timestamp
+        case leftEdgeAngle
+        case rightEdgeAngle
+        case edgeAngle
+        case side
+    }
+
+    init(timestamp: Date, leftEdgeAngle: Double?, rightEdgeAngle: Double?) {
         self.id = UUID()
         self.timestamp = timestamp
-        self.edgeAngle = edgeAngle
-        self.side = side
+        self.leftEdgeAngle = leftEdgeAngle
+        self.rightEdgeAngle = rightEdgeAngle
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        timestamp = try container.decode(Date.self, forKey: .timestamp)
+        let leftEdgeAngle = try container.decodeIfPresent(Double.self, forKey: .leftEdgeAngle)
+        let rightEdgeAngle = try container.decodeIfPresent(Double.self, forKey: .rightEdgeAngle)
+        if leftEdgeAngle != nil || rightEdgeAngle != nil {
+            self.leftEdgeAngle = leftEdgeAngle
+            self.rightEdgeAngle = rightEdgeAngle
+            return
+        }
+        let legacyAngle = try container.decodeIfPresent(Double.self, forKey: .edgeAngle)
+        let legacySide = try container.decodeIfPresent(SensorSide.self, forKey: .side)
+        switch legacySide {
+        case .right:
+            self.leftEdgeAngle = nil
+            self.rightEdgeAngle = legacyAngle
+        case .left, .single, .none:
+            self.leftEdgeAngle = legacyAngle
+            self.rightEdgeAngle = nil
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(timestamp, forKey: .timestamp)
+        try container.encodeIfPresent(leftEdgeAngle, forKey: .leftEdgeAngle)
+        try container.encodeIfPresent(rightEdgeAngle, forKey: .rightEdgeAngle)
     }
 }
 
 struct TurnSample: Codable, Identifiable {
     let id: UUID
     let timestamp: Date
-    let edgeAngle: Double
+    let leftEdgeAngle: Double?
+    let rightEdgeAngle: Double?
     let turnSignal: Double
 
-    init(timestamp: Date, edgeAngle: Double, turnSignal: Double) {
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case timestamp
+        case leftEdgeAngle
+        case rightEdgeAngle
+        case edgeAngle
+        case turnSignal
+    }
+
+    init(timestamp: Date, leftEdgeAngle: Double?, rightEdgeAngle: Double?, turnSignal: Double) {
         self.id = UUID()
         self.timestamp = timestamp
-        self.edgeAngle = edgeAngle
+        self.leftEdgeAngle = leftEdgeAngle
+        self.rightEdgeAngle = rightEdgeAngle
         self.turnSignal = turnSignal
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        timestamp = try container.decode(Date.self, forKey: .timestamp)
+        let leftEdgeAngle = try container.decodeIfPresent(Double.self, forKey: .leftEdgeAngle)
+        let rightEdgeAngle = try container.decodeIfPresent(Double.self, forKey: .rightEdgeAngle)
+        if leftEdgeAngle != nil || rightEdgeAngle != nil {
+            self.leftEdgeAngle = leftEdgeAngle
+            self.rightEdgeAngle = rightEdgeAngle
+        } else {
+            let legacyEdge = try container.decodeIfPresent(Double.self, forKey: .edgeAngle)
+            self.leftEdgeAngle = legacyEdge
+            self.rightEdgeAngle = nil
+        }
+        turnSignal = try container.decode(Double.self, forKey: .turnSignal)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(timestamp, forKey: .timestamp)
+        try container.encodeIfPresent(leftEdgeAngle, forKey: .leftEdgeAngle)
+        try container.encodeIfPresent(rightEdgeAngle, forKey: .rightEdgeAngle)
+        try container.encode(turnSignal, forKey: .turnSignal)
+    }
+
+    var combinedEdgeAngle: Double? {
+        let values = [leftEdgeAngle, rightEdgeAngle].compactMap { $0 }
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +) / Double(values.count)
+    }
+
+    var peakEdgeAngle: Double? {
+        [leftEdgeAngle, rightEdgeAngle].compactMap { $0 }.max()
     }
 }
 
 struct RawSensorSample: Codable, Identifiable {
     let id: UUID
     let timestamp: Date
-    let ax: Double
-    let ay: Double
-    let az: Double
-    let gx: Double
-    let gy: Double
-    let gz: Double
-    let side: SensorSide
+    let leftAx: Double?
+    let leftAy: Double?
+    let leftAz: Double?
+    let leftGx: Double?
+    let leftGy: Double?
+    let leftGz: Double?
+    let rightAx: Double?
+    let rightAy: Double?
+    let rightAz: Double?
+    let rightGx: Double?
+    let rightGy: Double?
+    let rightGz: Double?
     let speedMetersPerSecond: Double?
     let latitude: Double?
     let longitude: Double?
     let altitude: Double?
     let horizontalAccuracy: Double?
 
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case timestamp
+        case leftAx
+        case leftAy
+        case leftAz
+        case leftGx
+        case leftGy
+        case leftGz
+        case rightAx
+        case rightAy
+        case rightAz
+        case rightGx
+        case rightGy
+        case rightGz
+        case ax
+        case ay
+        case az
+        case gx
+        case gy
+        case gz
+        case side
+        case speedMetersPerSecond
+        case latitude
+        case longitude
+        case altitude
+        case horizontalAccuracy
+    }
+
     init(
         timestamp: Date,
-        ax: Double,
-        ay: Double,
-        az: Double,
-        gx: Double,
-        gy: Double,
-        gz: Double,
-        side: SensorSide,
+        leftSample: SensorSample?,
+        rightSample: SensorSample?,
         speedMetersPerSecond: Double? = nil,
         latitude: Double? = nil,
         longitude: Double? = nil,
@@ -76,18 +192,119 @@ struct RawSensorSample: Codable, Identifiable {
     ) {
         self.id = UUID()
         self.timestamp = timestamp
-        self.ax = ax
-        self.ay = ay
-        self.az = az
-        self.gx = gx
-        self.gy = gy
-        self.gz = gz
-        self.side = side
+        self.leftAx = leftSample?.ax
+        self.leftAy = leftSample?.ay
+        self.leftAz = leftSample?.az
+        self.leftGx = leftSample?.gx
+        self.leftGy = leftSample?.gy
+        self.leftGz = leftSample?.gz
+        self.rightAx = rightSample?.ax
+        self.rightAy = rightSample?.ay
+        self.rightAz = rightSample?.az
+        self.rightGx = rightSample?.gx
+        self.rightGy = rightSample?.gy
+        self.rightGz = rightSample?.gz
         self.speedMetersPerSecond = speedMetersPerSecond
         self.latitude = latitude
         self.longitude = longitude
         self.altitude = altitude
         self.horizontalAccuracy = horizontalAccuracy
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        timestamp = try container.decode(Date.self, forKey: .timestamp)
+        let leftAx = try container.decodeIfPresent(Double.self, forKey: .leftAx)
+        let leftAy = try container.decodeIfPresent(Double.self, forKey: .leftAy)
+        let leftAz = try container.decodeIfPresent(Double.self, forKey: .leftAz)
+        let leftGx = try container.decodeIfPresent(Double.self, forKey: .leftGx)
+        let leftGy = try container.decodeIfPresent(Double.self, forKey: .leftGy)
+        let leftGz = try container.decodeIfPresent(Double.self, forKey: .leftGz)
+        let rightAx = try container.decodeIfPresent(Double.self, forKey: .rightAx)
+        let rightAy = try container.decodeIfPresent(Double.self, forKey: .rightAy)
+        let rightAz = try container.decodeIfPresent(Double.self, forKey: .rightAz)
+        let rightGx = try container.decodeIfPresent(Double.self, forKey: .rightGx)
+        let rightGy = try container.decodeIfPresent(Double.self, forKey: .rightGy)
+        let rightGz = try container.decodeIfPresent(Double.self, forKey: .rightGz)
+        if leftAx != nil || rightAx != nil {
+            self.leftAx = leftAx
+            self.leftAy = leftAy
+            self.leftAz = leftAz
+            self.leftGx = leftGx
+            self.leftGy = leftGy
+            self.leftGz = leftGz
+            self.rightAx = rightAx
+            self.rightAy = rightAy
+            self.rightAz = rightAz
+            self.rightGx = rightGx
+            self.rightGy = rightGy
+            self.rightGz = rightGz
+        } else {
+            let legacyAx = try container.decodeIfPresent(Double.self, forKey: .ax)
+            let legacyAy = try container.decodeIfPresent(Double.self, forKey: .ay)
+            let legacyAz = try container.decodeIfPresent(Double.self, forKey: .az)
+            let legacyGx = try container.decodeIfPresent(Double.self, forKey: .gx)
+            let legacyGy = try container.decodeIfPresent(Double.self, forKey: .gy)
+            let legacyGz = try container.decodeIfPresent(Double.self, forKey: .gz)
+            let legacySide = try container.decodeIfPresent(SensorSide.self, forKey: .side)
+            switch legacySide {
+            case .right:
+                self.leftAx = nil
+                self.leftAy = nil
+                self.leftAz = nil
+                self.leftGx = nil
+                self.leftGy = nil
+                self.leftGz = nil
+                self.rightAx = legacyAx
+                self.rightAy = legacyAy
+                self.rightAz = legacyAz
+                self.rightGx = legacyGx
+                self.rightGy = legacyGy
+                self.rightGz = legacyGz
+            case .left, .single, .none:
+                self.leftAx = legacyAx
+                self.leftAy = legacyAy
+                self.leftAz = legacyAz
+                self.leftGx = legacyGx
+                self.leftGy = legacyGy
+                self.leftGz = legacyGz
+                self.rightAx = nil
+                self.rightAy = nil
+                self.rightAz = nil
+                self.rightGx = nil
+                self.rightGy = nil
+                self.rightGz = nil
+            }
+        }
+        speedMetersPerSecond = try container.decodeIfPresent(Double.self, forKey: .speedMetersPerSecond)
+        latitude = try container.decodeIfPresent(Double.self, forKey: .latitude)
+        longitude = try container.decodeIfPresent(Double.self, forKey: .longitude)
+        altitude = try container.decodeIfPresent(Double.self, forKey: .altitude)
+        horizontalAccuracy = try container.decodeIfPresent(Double.self, forKey: .horizontalAccuracy)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(timestamp, forKey: .timestamp)
+        try container.encodeIfPresent(leftAx, forKey: .leftAx)
+        try container.encodeIfPresent(leftAy, forKey: .leftAy)
+        try container.encodeIfPresent(leftAz, forKey: .leftAz)
+        try container.encodeIfPresent(leftGx, forKey: .leftGx)
+        try container.encodeIfPresent(leftGy, forKey: .leftGy)
+        try container.encodeIfPresent(leftGz, forKey: .leftGz)
+        try container.encodeIfPresent(rightAx, forKey: .rightAx)
+        try container.encodeIfPresent(rightAy, forKey: .rightAy)
+        try container.encodeIfPresent(rightAz, forKey: .rightAz)
+        try container.encodeIfPresent(rightGx, forKey: .rightGx)
+        try container.encodeIfPresent(rightGy, forKey: .rightGy)
+        try container.encodeIfPresent(rightGz, forKey: .rightGz)
+        try container.encodeIfPresent(speedMetersPerSecond, forKey: .speedMetersPerSecond)
+        try container.encodeIfPresent(latitude, forKey: .latitude)
+        try container.encodeIfPresent(longitude, forKey: .longitude)
+        try container.encodeIfPresent(altitude, forKey: .altitude)
+        try container.encodeIfPresent(horizontalAccuracy, forKey: .horizontalAccuracy)
     }
 }
 

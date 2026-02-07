@@ -85,21 +85,36 @@ struct RunAnalysisView: View {
                 Text("Turn \(turn.index) • \(turn.direction.rawValue.capitalized)")
                     .font(.subheadline.weight(.semibold))
                 let samples = turnChartSamples(for: turn)
-                Chart(samples) { sample in
-                    LineMark(
-                        x: .value("Turn %", sample.progress),
-                        y: .value("Edge angle", sample.edgeAngle)
-                    )
-                    .interpolationMethod(.catmullRom)
-                    AreaMark(
-                        x: .value("Turn %", sample.progress),
-                        y: .value("Edge angle", sample.edgeAngle)
-                    )
-                    .foregroundStyle(.linearGradient(
-                        colors: [Color.purple.opacity(0.4), Color.purple.opacity(0.05)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ))
+                let leftSamples = edgeSeries(from: samples, side: .left)
+                let rightSamples = edgeSeries(from: samples, side: .right)
+                Chart {
+                    ForEach(leftSamples) { sample in
+                        LineMark(
+                            x: .value("Turn %", sample.progress),
+                            y: .value("Left edge angle", sample.edgeAngle)
+                        )
+                        .foregroundStyle(.blue)
+                        .interpolationMethod(.catmullRom)
+                    }
+                    ForEach(rightSamples) { sample in
+                        LineMark(
+                            x: .value("Turn %", sample.progress),
+                            y: .value("Right edge angle", sample.edgeAngle)
+                        )
+                        .foregroundStyle(.purple)
+                        .interpolationMethod(.catmullRom)
+                    }
+                    if leftSamples.isEmpty && rightSamples.isEmpty {
+                        ForEach(samples) { sample in
+                            if let edgeAngle = sample.combinedEdgeAngle {
+                                LineMark(
+                                    x: .value("Turn %", sample.progress),
+                                    y: .value("Edge angle", edgeAngle)
+                                )
+                                .interpolationMethod(.catmullRom)
+                            }
+                        }
+                    }
                     if let activeTurnProgress {
                         RuleMark(x: .value("Selected turn progress", activeTurnProgress))
                             .foregroundStyle(.orange)
@@ -143,17 +158,34 @@ struct RunAnalysisView: View {
             let progress = (sample.timestamp.timeIntervalSince(turn.startTime) / duration) * 100
             return TurnChartSample(
                 progress: progress,
-                edgeAngle: sample.edgeAngle,
+                leftEdgeAngle: sample.leftEdgeAngle,
+                rightEdgeAngle: sample.rightEdgeAngle,
                 turnSignal: sample.turnSignal,
                 timestamp: sample.timestamp
             )
         }
     }
 
+    private func edgeSeries(from samples: [TurnChartSample], side: SensorSide) -> [TurnEdgePoint] {
+        samples.compactMap { sample in
+            let angle: Double?
+            switch side {
+            case .left:
+                angle = sample.leftEdgeAngle
+            case .right:
+                angle = sample.rightEdgeAngle
+            case .single:
+                angle = sample.leftEdgeAngle ?? sample.rightEdgeAngle
+            }
+            guard let angle else { return nil }
+            return TurnEdgePoint(id: sample.id, progress: sample.progress, edgeAngle: angle)
+        }
+    }
+
     private var selectedSample: TurnChartSample? {
         guard let turn = selectedTurn else { return nil }
         let samples = turnChartSamples(for: turn)
-        guard let activeTurnProgress else { return samples.max(by: { $0.edgeAngle < $1.edgeAngle }) }
+        guard let activeTurnProgress else { return samples.max(by: { $0.maxEdgeAngle < $1.maxEdgeAngle }) }
         return samples.min(by: { abs($0.progress - activeTurnProgress) < abs($1.progress - activeTurnProgress) })
     }
 
@@ -164,13 +196,28 @@ struct RunAnalysisView: View {
             return
         }
         let samples = turnChartSamples(for: turn)
-        guard let peakSample = samples.max(by: { $0.edgeAngle < $1.edgeAngle }) else {
+        guard let peakSample = samples.max(by: { $0.maxEdgeAngle < $1.maxEdgeAngle }) else {
             selectedTurnProgress = nil
             lastSelectedTurnProgress = nil
             return
         }
         selectedTurnProgress = peakSample.progress
         lastSelectedTurnProgress = peakSample.progress
+    }
+
+    private func edgeAngleDetail(for sample: TurnChartSample) -> String {
+        let left = sample.leftEdgeAngle.map { "\(Int($0))°" }
+        let right = sample.rightEdgeAngle.map { "\(Int($0))°" }
+        if let left, let right {
+            return "L \(left) / R \(right)"
+        }
+        if let left {
+            return left
+        }
+        if let right {
+            return right
+        }
+        return "—"
     }
 
     private func updateMapPosition() {
@@ -208,7 +255,7 @@ struct RunAnalysisView: View {
                 .font(.subheadline.weight(.semibold))
             HStack(spacing: 16) {
                 detailTile(title: "Progress", value: "\(Int(sample.progress))%")
-                detailTile(title: "Edge angle", value: "\(Int(sample.edgeAngle))°")
+                detailTile(title: "Edge angle", value: edgeAngleDetail(for: sample))
                 detailTile(title: "Turn signal", value: String(format: "%.2f", sample.turnSignal))
                 detailTile(title: "Turn time", value: formattedTurnDuration(turn))
             }
@@ -342,8 +389,11 @@ struct RunAnalysisView: View {
     }
 
     private var formattedEdgeSampleCount: String {
-        guard !run.edgeSamples.isEmpty else { return "—" }
-        return "\(run.edgeSamples.count)"
+        let sampleCount = run.edgeSamples.reduce(0) { partial, sample in
+            partial + (sample.leftAngle == nil ? 0 : 1) + (sample.rightAngle == nil ? 0 : 1)
+        }
+        guard sampleCount > 0 else { return "—" }
+        return "\(sampleCount)"
     }
 
     private var formattedEdgeSampleResolution: String {
@@ -372,18 +422,32 @@ struct RunAnalysisView: View {
     }
 
     private var maxEdgeAngle: Double? {
-        run.edgeSamples.map(\.angle).max()
+        run.edgeSamples.compactMap { sample in
+            [sample.leftAngle, sample.rightAngle].compactMap { $0 }.max()
+        }.max()
     }
 
     private var averageEdgeAngle: Double? {
-        guard !run.edgeSamples.isEmpty else { return nil }
-        let total = run.edgeSamples.map(\.angle).reduce(0, +)
-        return total / Double(run.edgeSamples.count)
+        let values = run.edgeSamples.flatMap { sample in
+            [sample.leftAngle, sample.rightAngle].compactMap { $0 }
+        }
+        guard !values.isEmpty else { return nil }
+        let total = values.reduce(0, +)
+        return total / Double(values.count)
     }
 
     private func peakEdgeAngle(for side: SensorSide) -> Double? {
-        let samples = run.edgeSamples.filter { $0.side == side }
-        return samples.map(\.angle).max()
+        let values = run.edgeSamples.compactMap { sample -> Double? in
+            switch side {
+            case .left:
+                return sample.leftAngle
+            case .right:
+                return sample.rightAngle
+            case .single:
+                return sample.leftAngle ?? sample.rightAngle
+            }
+        }
+        return values.max()
     }
 
     private var formattedTurnSymmetry: String {
@@ -440,7 +504,10 @@ struct RunAnalysisView: View {
         var rates: [Double] = []
         rates.reserveCapacity(sorted.count - 1)
         for index in 1..<sorted.count {
-            let deltaAngle = abs(sorted[index].angle - sorted[index - 1].angle)
+            guard let currentAngle = sorted[index].combinedAngle,
+                  let previousAngle = sorted[index - 1].combinedAngle
+            else { continue }
+            let deltaAngle = abs(currentAngle - previousAngle)
             let deltaTime = sorted[index].timestamp.timeIntervalSince(sorted[index - 1].timestamp)
             if deltaTime > 0 {
                 rates.append(deltaAngle / deltaTime)
@@ -512,9 +579,26 @@ struct RunAnalysisView: View {
 private struct TurnChartSample: Identifiable {
     let id = UUID()
     let progress: Double
-    let edgeAngle: Double
+    let leftEdgeAngle: Double?
+    let rightEdgeAngle: Double?
     let turnSignal: Double
     let timestamp: Date
+
+    var combinedEdgeAngle: Double? {
+        let values = [leftEdgeAngle, rightEdgeAngle].compactMap { $0 }
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +) / Double(values.count)
+    }
+
+    var maxEdgeAngle: Double {
+        [leftEdgeAngle, rightEdgeAngle].compactMap { $0 }.max() ?? 0
+    }
+}
+
+private struct TurnEdgePoint: Identifiable {
+    let id: UUID
+    let progress: Double
+    let edgeAngle: Double
 }
 
 private struct RawDataExport: Codable {
