@@ -336,6 +336,9 @@ struct ContentView: View {
             }
 
             if sensorMode == .dual {
+                Text("Calibrate each boot separately for accurate left/right tracking.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 calibrationStatusRow(title: "Left sensor", client: leftClient ?? sensorAClient)
                 calibrationStatusRow(title: "Right sensor", client: rightClient ?? sensorBClient)
                 HStack {
@@ -1343,11 +1346,24 @@ private struct RunSessionView: View {
     }
 }
 
-private struct BootAngleCard: View {
-    let angle: Double
-    let tiltAngle: Double
+private struct BootAngleSnapshot: Identifiable {
+    let id = UUID()
+    let label: String
+    let edgeAngle: Double
+    let signedEdgeAngle: Double
     let forwardAngle: Double
+    let isCalibrated: Bool
+}
+
+private struct BootAngleCard: View {
+    let boots: [BootAngleSnapshot]
     @State private var show3DView = false
+
+    private var averageAngle: Int {
+        let values = boots.map { $0.edgeAngle }
+        guard !values.isEmpty else { return 0 }
+        return Int(values.reduce(0, +) / Double(values.count))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1355,7 +1371,7 @@ private struct BootAngleCard: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Boot edge angle")
                         .font(.headline)
-                    Text("Live side tilt")
+                    Text(boots.count > 1 ? "Left + right boots" : "Live side tilt")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -1364,16 +1380,16 @@ private struct BootAngleCard: View {
                     Toggle("3D view", isOn: $show3DView)
                         .font(.footnote.weight(.semibold))
                         .toggleStyle(.switch)
-                    Text("\(Int(angle))°")
+                    Text("\(averageAngle)°")
                         .font(.headline.weight(.semibold))
                 }
             }
 
             Group {
-                if show3DView {
-                    Boot3DView(pitchAngle: forwardAngle, rollAngle: tiltAngle)
+                if boots.count == 1, let boot = boots.first {
+                    singleBootView(boot)
                 } else {
-                    BootTiltView(angle: tiltAngle)
+                    dualBootView
                 }
             }
             .frame(height: 180)
@@ -1386,9 +1402,15 @@ private struct BootAngleCard: View {
 
             if show3DView {
                 HStack {
-                    Text("Forward/Aft: \(Int(forwardAngle))°")
-                    Spacer()
-                    Text("Side: \(Int(tiltAngle))°")
+                    ForEach(boots) { boot in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(boot.label)
+                                .font(.caption.weight(.semibold))
+                            Text("Forward \(Int(boot.forwardAngle))°")
+                            Text("Side \(Int(boot.signedEdgeAngle))°")
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -1397,6 +1419,41 @@ private struct BootAngleCard: View {
         .padding()
         .background(Color(.secondarySystemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 20))
+    }
+
+    private func singleBootView(_ boot: BootAngleSnapshot) -> some View {
+        Group {
+            if show3DView {
+                Boot3DView(pitchAngle: boot.forwardAngle, rollAngle: boot.signedEdgeAngle)
+            } else {
+                BootTiltView(angle: boot.signedEdgeAngle)
+            }
+        }
+    }
+
+    private var dualBootView: some View {
+        HStack(spacing: 16) {
+            ForEach(boots) { boot in
+                VStack(spacing: 8) {
+                    if show3DView {
+                        Boot3DView(pitchAngle: boot.forwardAngle, rollAngle: boot.signedEdgeAngle)
+                    } else {
+                        BootTiltView(angle: boot.signedEdgeAngle)
+                    }
+                    VStack(spacing: 2) {
+                        Text(boot.label)
+                            .font(.footnote.weight(.semibold))
+                        Text("Edge \(Int(boot.edgeAngle))°")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(boot.isCalibrated ? "Calibrated" : "Needs calibration")
+                            .font(.caption)
+                            .foregroundStyle(boot.isCalibrated ? .green : .orange)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 8)
     }
 }
 
@@ -1525,24 +1582,27 @@ private struct Boot3DView: View {
 
 private extension ContentView {
     var bootAngleCard: some View {
-        let pitchRoll = primaryClient.latestSample.map { primaryClient.pitchRoll(from: $0) }
-        let forwardAngle = pitchRoll?.pitch ?? 0
-        return BootAngleCard(
-            angle: combinedEdgeAngle,
-            tiltAngle: combinedSignedEdgeAngle,
-            forwardAngle: forwardAngle
+        if sensorMode == .dual {
+            let leftClient = leftClient ?? sensorAClient
+            let rightClient = rightClient ?? sensorBClient
+            return BootAngleCard(
+                boots: [
+                    bootSnapshot(label: "Left boot", client: leftClient),
+                    bootSnapshot(label: "Right boot", client: rightClient)
+                ]
+            )
+        }
+        return BootAngleCard(boots: [bootSnapshot(label: "Boot", client: primaryClient)])
+    }
+
+    private func bootSnapshot(label: String, client: StreamClient) -> BootAngleSnapshot {
+        let pitchRoll = client.latestSample.map { client.pitchRoll(from: $0) }
+        return BootAngleSnapshot(
+            label: label,
+            edgeAngle: client.latestEdgeAngle,
+            signedEdgeAngle: client.latestSignedEdgeAngle,
+            forwardAngle: pitchRoll?.pitch ?? 0,
+            isCalibrated: client.calibrationState.isCalibrated
         )
-    }
-
-    var combinedEdgeAngle: Double {
-        let values = [primaryClient.latestEdgeAngle, secondaryClient?.latestEdgeAngle].compactMap { $0 }
-        guard !values.isEmpty else { return 0 }
-        return values.reduce(0, +) / Double(values.count)
-    }
-
-    var combinedSignedEdgeAngle: Double {
-        let values = [primaryClient.latestSignedEdgeAngle, secondaryClient?.latestSignedEdgeAngle].compactMap { $0 }
-        guard !values.isEmpty else { return 0 }
-        return values.reduce(0, +) / Double(values.count)
     }
 }

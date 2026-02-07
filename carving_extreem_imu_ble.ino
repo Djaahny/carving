@@ -43,7 +43,10 @@ constexpr auto ACCEL_RANGE = bfs::Mpu9250::ACCEL_RANGE_16G;
 constexpr auto GYRO_RANGE = bfs::Mpu9250::GYRO_RANGE_2000DPS;
 
 // BLE settings
-constexpr char DEVICE_NAME[] = "Carving-Extreem";
+// Use a unique suffix per sensor so the phone can distinguish devices.
+// Example: "RightLeg" or "LeftLeg".
+constexpr char DEVICE_NAME_BASE[] = "Carving-Extreem";
+constexpr char DEVICE_NAME_SUFFIX[] = "RightLeg";
 constexpr char SERVICE_UUID[] = "7a3f0001-3c12-4b50-8d32-9f8c8a3d8f31";
 constexpr char DATA_CHAR_UUID[] = "7a3f0002-3c12-4b50-8d32-9f8c8a3d8f31";
 
@@ -68,6 +71,7 @@ BiquadFilter accelFilters[3];
 BiquadFilter gyroFilters[3];
 
 BLECharacteristic *dataCharacteristic = nullptr;
+String deviceName;
 uint32_t lastBleNotifyMs = 0;
 uint32_t lastDebugPrintMs = 0;
 
@@ -139,7 +143,8 @@ void SetupImu() {
 }
 
 void SetupBle() {
-  BLEDevice::init(DEVICE_NAME);
+  deviceName = String(DEVICE_NAME_BASE) + "-" + DEVICE_NAME_SUFFIX;
+  BLEDevice::init(deviceName.c_str());
   BLEServer *server = BLEDevice::createServer();
   server->setCallbacks(new CarvingServerCallbacks());
 
