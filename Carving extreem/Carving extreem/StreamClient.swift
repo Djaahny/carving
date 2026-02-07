@@ -14,29 +14,60 @@ struct SensorSample: Equatable {
 struct EdgeSample: Identifiable, Codable {
     var id: UUID
     let timestamp: Date
-    let angle: Double
-    let side: SensorSide
+    let leftAngle: Double?
+    let rightAngle: Double?
 
     private enum CodingKeys: String, CodingKey {
         case id
         case timestamp
+        case leftAngle
+        case rightAngle
         case angle
         case side
     }
 
-    init(id: UUID = UUID(), timestamp: Date, angle: Double, side: SensorSide) {
+    init(id: UUID = UUID(), timestamp: Date, leftAngle: Double?, rightAngle: Double?) {
         self.id = id
         self.timestamp = timestamp
-        self.angle = angle
-        self.side = side
+        self.leftAngle = leftAngle
+        self.rightAngle = rightAngle
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         timestamp = try container.decode(Date.self, forKey: .timestamp)
-        angle = try container.decode(Double.self, forKey: .angle)
-        side = try container.decode(SensorSide.self, forKey: .side)
+        let leftAngle = try container.decodeIfPresent(Double.self, forKey: .leftAngle)
+        let rightAngle = try container.decodeIfPresent(Double.self, forKey: .rightAngle)
+        if leftAngle != nil || rightAngle != nil {
+            self.leftAngle = leftAngle
+            self.rightAngle = rightAngle
+            return
+        }
+        let legacyAngle = try container.decodeIfPresent(Double.self, forKey: .angle)
+        let legacySide = try container.decodeIfPresent(SensorSide.self, forKey: .side)
+        switch legacySide {
+        case .right:
+            self.leftAngle = nil
+            self.rightAngle = legacyAngle
+        case .left, .single, .none:
+            self.leftAngle = legacyAngle
+            self.rightAngle = nil
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(timestamp, forKey: .timestamp)
+        try container.encodeIfPresent(leftAngle, forKey: .leftAngle)
+        try container.encodeIfPresent(rightAngle, forKey: .rightAngle)
+    }
+
+    var combinedAngle: Double? {
+        let angles = [leftAngle, rightAngle].compactMap { $0 }
+        guard !angles.isEmpty else { return nil }
+        return angles.reduce(0, +) / Double(angles.count)
     }
 }
 

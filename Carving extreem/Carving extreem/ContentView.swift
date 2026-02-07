@@ -1154,7 +1154,9 @@ private struct RunSessionView: View {
         case .liveRightEdge:
             return edgeValue(for: .right)
         case .livePeakEdge:
-            let peak = session.edgeSamples.map(\.angle).max() ?? 0
+            let peak = session.edgeSamples.compactMap { sample in
+                [sample.leftAngle, sample.rightAngle].compactMap { $0 }.max()
+            }.max() ?? 0
             return "\(Int(peak))°"
         case .liveEdgeRate:
             return formattedEdgeRate(samples: session.edgeSamples)
@@ -1219,7 +1221,10 @@ private struct RunSessionView: View {
         var rates: [Double] = []
         rates.reserveCapacity(sorted.count - 1)
         for index in 1..<sorted.count {
-            let deltaAngle = abs(sorted[index].angle - sorted[index - 1].angle)
+            guard let currentAngle = sorted[index].combinedAngle,
+                  let previousAngle = sorted[index - 1].combinedAngle
+            else { continue }
+            let deltaAngle = abs(currentAngle - previousAngle)
             let deltaTime = sorted[index].timestamp.timeIntervalSince(sorted[index - 1].timestamp)
             if deltaTime > 0 {
                 rates.append(deltaAngle / deltaTime)
@@ -1231,14 +1236,20 @@ private struct RunSessionView: View {
         return String(format: "%.1f°/s", average)
     }
 
-    private func edgeSamples(for side: SensorSide) -> [EdgeSample] {
-        switch side {
-        case .single:
-            return session.edgeSamples.filter { $0.side == .single }
-        case .left:
-            return session.edgeSamples.filter { $0.side == .left }
-        case .right:
-            return session.edgeSamples.filter { $0.side == .right }
+    private func edgeSamples(for side: SensorSide) -> [EdgeAngleSample] {
+        session.edgeSamples.compactMap { sample in
+            let angle: Double?
+            switch side {
+            case .single:
+                guard sensorMode == .single else { return nil }
+                angle = sample.leftAngle ?? sample.rightAngle
+            case .left:
+                angle = sample.leftAngle
+            case .right:
+                angle = sample.rightAngle
+            }
+            guard let angle else { return nil }
+            return EdgeAngleSample(id: sample.id, timestamp: sample.timestamp, angle: angle)
         }
     }
 
@@ -1344,6 +1355,12 @@ private struct RunSessionView: View {
         }
         return nil
     }
+}
+
+private struct EdgeAngleSample: Identifiable {
+    let id: UUID
+    let timestamp: Date
+    let angle: Double
 }
 
 private struct BootAngleSnapshot: Identifiable {
