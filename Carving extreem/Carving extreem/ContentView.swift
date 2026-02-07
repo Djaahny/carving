@@ -1004,6 +1004,7 @@ private struct RunSessionView: View {
     @ObservedObject var locationManager: RideLocationManager
     @ObservedObject var runStore: RunDataStore
     @State private var saveError: String?
+    private let edgeUpdateInterval: TimeInterval = 0.05
 
     var body: some View {
         NavigationStack {
@@ -1095,7 +1096,7 @@ private struct RunSessionView: View {
             }
         }
         .interactiveDismissDisabled(session.isRunning)
-        .onReceive(primaryClient.$latestEdgeAngle) { angle in
+        .onReceive(primaryEdgePublisher) { angle in
             guard session.isRunning, let sample = primaryClient.latestSample else { return }
             ingestSample(from: primaryClient, sample: sample, edgeAngle: angle, fallbackSide: .left)
         }
@@ -1121,6 +1122,12 @@ private struct RunSessionView: View {
         } message: {
             Text(saveError ?? "Unknown error")
         }
+    }
+
+    private var primaryEdgePublisher: AnyPublisher<Double, Never> {
+        primaryClient.$latestEdgeAngle
+            .throttle(for: .seconds(edgeUpdateInterval), scheduler: RunLoop.main, latest: true)
+            .eraseToAnyPublisher()
     }
 
     private var runStats: some View {
@@ -1291,7 +1298,9 @@ private struct RunSessionView: View {
     }
 
     private var secondaryEdgePublisher: AnyPublisher<Double, Never> {
-        secondaryClient?.$latestEdgeAngle.eraseToAnyPublisher() ?? Just(0).eraseToAnyPublisher()
+        secondaryClient?.$latestEdgeAngle
+            .throttle(for: .seconds(edgeUpdateInterval), scheduler: RunLoop.main, latest: true)
+            .eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()
     }
 
     private func computeTurnSignal(from sample: SensorSample) -> Double {
