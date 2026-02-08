@@ -1023,6 +1023,7 @@ private struct RunSessionView: View {
     @ObservedObject var runStore: RunDataStore
     @State private var saveError: String?
     private let edgeUpdateInterval: TimeInterval = 0.05
+    private let edgeGapThreshold: TimeInterval = 0.75
 
     var body: some View {
         NavigationStack {
@@ -1043,20 +1044,9 @@ private struct RunSessionView: View {
                         }
 
                         Chart {
-                            ForEach(edgeSamples(for: .single)) { sample in
-                                LineMark(x: .value("Time", sample.timestamp), y: .value("Angle", sample.angle))
-                                    .interpolationMethod(.catmullRom)
-                            }
-                            ForEach(edgeSamples(for: .left)) { sample in
-                                LineMark(x: .value("Time", sample.timestamp), y: .value("Angle", sample.angle))
-                                    .foregroundStyle(.blue)
-                                    .interpolationMethod(.catmullRom)
-                            }
-                            ForEach(edgeSamples(for: .right)) { sample in
-                                LineMark(x: .value("Time", sample.timestamp), y: .value("Angle", sample.angle))
-                                    .foregroundStyle(.purple)
-                                    .interpolationMethod(.catmullRom)
-                            }
+                            edgeLineSeries(for: .single, color: nil)
+                            edgeLineSeries(for: .left, color: .blue)
+                            edgeLineSeries(for: .right, color: .purple)
                         }
                         .chartYScale(domain: 0...90)
                         .frame(height: 220)
@@ -1276,6 +1266,40 @@ private struct RunSessionView: View {
             guard let angle else { return nil }
             return EdgeAngleSample(id: sample.id, timestamp: sample.timestamp, angle: angle)
         }
+    }
+
+    @ChartContentBuilder
+    private func edgeLineSeries(for side: SensorSide, color: Color?) -> some ChartContent {
+        let segments = edgeSampleSegments(for: side)
+        ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+            ForEach(segment) { sample in
+                LineMark(x: .value("Time", sample.timestamp), y: .value("Angle", sample.angle))
+                    .foregroundStyle(color ?? .primary)
+                    .interpolationMethod(.catmullRom)
+            }
+        }
+    }
+
+    private func edgeSampleSegments(for side: SensorSide) -> [[EdgeAngleSample]] {
+        let samples = edgeSamples(for: side).sorted { $0.timestamp < $1.timestamp }
+        guard !samples.isEmpty else { return [] }
+        var segments: [[EdgeAngleSample]] = []
+        var current: [EdgeAngleSample] = []
+        for sample in samples {
+            if let last = current.last,
+               sample.timestamp.timeIntervalSince(last.timestamp) > edgeGapThreshold
+            {
+                if !current.isEmpty {
+                    segments.append(current)
+                }
+                current = []
+            }
+            current.append(sample)
+        }
+        if !current.isEmpty {
+            segments.append(current)
+        }
+        return segments
     }
 
     private func ingestSample(from client: StreamClient, sample: SensorSample, edgeAngle: Double, fallbackSide: SensorSide) {
