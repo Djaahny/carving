@@ -242,6 +242,7 @@ final class StreamClient: NSObject, ObservableObject {
     private let edgeHoldMinSeparationDegrees = 25.0
     private let forefootHoldMinSampleCount = 10
     private let forefootMinPitchDegrees = 8.0
+    private let allowsBackgroundBluetooth: Bool
 
     private var centralManager: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -258,10 +259,14 @@ final class StreamClient: NSObject, ObservableObject {
         savedPeripheralNameKey = "lastPeripheralName.\(storageSuffix)"
         calibrationKey = "calibrationState.\(storageSuffix)"
         restorationIdentifier = "carving.streamclient.\(storageSuffix)"
+        allowsBackgroundBluetooth = Self.hasBackgroundMode("bluetooth-central")
         super.init()
         calibrationState = loadCalibration()
         lastKnownSensorName = UserDefaults.standard.string(forKey: savedPeripheralNameKey)
-        let options = Self.bluetoothCentralOptions(restorationIdentifier: restorationIdentifier)
+        let options = Self.bluetoothCentralOptions(
+            restorationIdentifier: restorationIdentifier,
+            allowsBackgroundBluetooth: allowsBackgroundBluetooth
+        )
         centralManager = CBCentralManager(delegate: self, queue: nil, options: options)
     }
 
@@ -307,7 +312,12 @@ final class StreamClient: NSObject, ObservableObject {
     }
 
     private var connectOptions: [String: Any]? {
-        nil
+        guard allowsBackgroundBluetooth else { return nil }
+        return [
+            CBConnectPeripheralOptionNotifyOnConnectionKey: true,
+            CBConnectPeripheralOptionNotifyOnDisconnectionKey: true,
+            CBConnectPeripheralOptionNotifyOnNotificationKey: true
+        ]
     }
 
     private func resetConnectionState(statusText: String) {
@@ -375,8 +385,11 @@ final class StreamClient: NSObject, ObservableObject {
         )
     }
 
-    private static func bluetoothCentralOptions(restorationIdentifier: String) -> [String: Any]? {
-        guard hasBackgroundMode("bluetooth-central") else { return nil }
+    private static func bluetoothCentralOptions(
+        restorationIdentifier: String,
+        allowsBackgroundBluetooth: Bool
+    ) -> [String: Any]? {
+        guard allowsBackgroundBluetooth else { return nil }
         return [CBCentralManagerOptionRestoreIdentifierKey: restorationIdentifier]
     }
 
