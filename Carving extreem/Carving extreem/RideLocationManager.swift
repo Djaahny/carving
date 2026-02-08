@@ -23,11 +23,11 @@ final class RideLocationManager: NSObject, ObservableObject {
         switch manager.authorizationStatus {
         case .notDetermined:
             status = "Requesting location access…"
-            manager.requestAlwaysAuthorization()
+            manager.requestWhenInUseAuthorization()
         case .restricted, .denied:
             status = "Location access denied"
         case .authorizedAlways, .authorizedWhenInUse:
-            manager.allowsBackgroundLocationUpdates = (manager.authorizationStatus == .authorizedAlways)
+            manager.allowsBackgroundLocationUpdates = false
             status = "GPS active"
             manager.startUpdatingLocation()
         @unknown default:
