@@ -51,9 +51,12 @@ final class RideSessionViewModel: ObservableObject {
     private var currentTurnSamples: [TurnSample] = []
     private var lastTurnStart: Date?
     private var currentTurnPeakSignal: Double = 0
+    private var turnSignalHistory: [Double] = []
     private var latestLocationSample: LocationSample?
     private var latestPrimarySample: SensorSample?
+    private var latestPrimarySide: SensorSide?
     private var latestRawSamplesBySide: [SensorSide: SensorSample] = [:]
+    private var turnSignalProcessor = TurnSignalProcessor()
 
     init() {
         let storedThreshold = UserDefaults.standard.object(forKey: edgeThresholdKey) as? Double
@@ -88,8 +91,10 @@ final class RideSessionViewModel: ObservableObject {
         currentTurnSamples = []
         lastTurnStart = nil
         currentTurnPeakSignal = 0
+        turnSignalHistory = []
         latestLocationSample = nil
         latestPrimarySample = nil
+        latestPrimarySide = nil
         latestRawSamplesBySide = [:]
 
         timerCancellable = Timer.publish(every: 1, on: .main, in: .common)
@@ -139,11 +144,13 @@ final class RideSessionViewModel: ObservableObject {
 
         if side == primarySide || (primarySide == .single && side != .right) {
             latestPrimarySample = sample
+            latestPrimarySide = side
         }
 
-        if let primarySample = latestPrimarySample {
-            let turnSignal = computeTurnSignal(from: primarySample)
-            updateTurnDetection(turnSignal: turnSignal, edgeAngle: latestEdgeAngle, location: location, at: date)
+        if let primarySample = latestPrimarySample, let primarySide = latestPrimarySide {
+            if let result = turnSignalProcessor.process(sample: primarySample, side: primarySide, at: date), result.isValid {
+                updateTurnDetection(turnSignal: result.signal, edgeAngle: latestEdgeAngle, location: location, at: date)
+            }
         }
 
         if !isInTurn {
@@ -204,11 +211,8 @@ final class RideSessionViewModel: ObservableObject {
         )
     }
 
-    private func computeTurnSignal(from sample: SensorSample) -> Double {
-        sample.gz
-    }
-
     private func updateTurnDetection(turnSignal: Double, edgeAngle: Double, location: LocationSample?, at date: Date) {
+        let turnOnThreshold = max(turnSettings.turnOnThreshold, adaptiveTurnOnThreshold(for: abs(turnSignal)))
         if isInTurn {
             let edgeAngles = edgeAnglesForRecording()
             currentTurnSamples.append(
@@ -238,7 +242,7 @@ final class RideSessionViewModel: ObservableObject {
             return
         }
 
-        if abs(turnSignal) > turnSettings.turnOnThreshold {
+        if abs(turnSignal) > turnOnThreshold {
             if turnStartCandidate == nil {
                 turnStartCandidate = date
             }
@@ -310,6 +314,28 @@ final class RideSessionViewModel: ObservableObject {
         currentTurnStart = nil
         currentTurnSamples = []
         currentTurnPeakSignal = 0
+    }
+
+    private func adaptiveTurnOnThreshold(for value: Double) -> Double {
+        turnSignalHistory.append(value)
+        if turnSignalHistory.count > turnSettings.adaptiveWindowSize {
+            turnSignalHistory.removeFirst(turnSignalHistory.count - turnSettings.adaptiveWindowSize)
+        }
+        guard turnSignalHistory.count >= turnSettings.adaptiveMinSamples else { return 0 }
+        let median = medianValue(from: turnSignalHistory)
+        let deviations = turnSignalHistory.map { abs($0 - median) }
+        let mad = medianValue(from: deviations)
+        return median + (turnSettings.adaptiveMadMultiplier * mad)
+    }
+
+    private func medianValue(from values: [Double]) -> Double {
+        let sorted = values.sorted()
+        guard !sorted.isEmpty else { return 0 }
+        let middle = sorted.count / 2
+        if sorted.count % 2 == 0 {
+            return (sorted[middle - 1] + sorted[middle]) / 2
+        }
+        return sorted[middle]
     }
 
     func buildRunRecord(runNumber: Int, date: Date = Date(), calibration: RunCalibration? = nil) -> RunRecord {
@@ -389,6 +415,149 @@ final class RideSessionViewModel: ObservableObject {
     }
 }
 
+private struct TurnSignalResult {
+    let signal: Double
+    let magnitude: Double
+    let isValid: Bool
+}
+
+private struct TurnSignalSideState {
+    var lastTimestamp: Date?
+    var filteredMagnitude: Double?
+    var magnitudeHistory: [Double] = []
+    var imbalanceCount: Int = 0
+    var lastValidMagnitude: Double?
+}
+
+private struct TurnSignalProcessor {
+    private let settings = TurnSignalFilterSettings()
+    private var states: [SensorSide: TurnSignalSideState] = [:]
+
+    mutating func process(sample: SensorSample, side: SensorSide, at timestamp: Date) -> TurnSignalResult? {
+        var state = states[side] ?? TurnSignalSideState()
+        let previousTimestamp = state.lastTimestamp
+        if let previousTimestamp, timestamp == previousTimestamp {
+            return nil
+        }
+
+        state.lastTimestamp = timestamp
+        let accelMagnitude = sqrt(sample.ax * sample.ax + sample.ay * sample.ay + sample.az * sample.az)
+        let gyroMagnitude = sqrt(sample.gx * sample.gx + sample.gy * sample.gy + sample.gz * sample.gz)
+        let otherSide: SensorSide?
+        switch side {
+        case .left:
+            otherSide = .right
+        case .right:
+            otherSide = .left
+        case .single:
+            otherSide = nil
+        }
+        let counterpartMagnitude = otherSide.flatMap { states[$0]?.lastValidMagnitude }
+
+        let isAccelValid = accelMagnitude <= settings.maxAccelG
+        let isGyroValid = gyroMagnitude <= settings.maxGyroRad
+        let isConsistent = !isImbalanced(gyroMagnitude: gyroMagnitude, counterpartMagnitude: counterpartMagnitude, state: &state)
+        let isValid = isAccelValid && isGyroValid && isConsistent
+
+        guard isValid else {
+            states[side] = state
+            return TurnSignalResult(signal: 0, magnitude: gyroMagnitude, isValid: false)
+        }
+
+        let despikedMagnitude = applyHampelFilter(to: gyroMagnitude, history: state.magnitudeHistory)
+        state.magnitudeHistory.append(despikedMagnitude)
+        if state.magnitudeHistory.count > settings.hampelWindowSize {
+            state.magnitudeHistory.removeFirst(state.magnitudeHistory.count - settings.hampelWindowSize)
+        }
+
+        let filteredMagnitude = applyLowPassFilter(
+            current: despikedMagnitude,
+            previous: state.filteredMagnitude,
+            previousTimestamp: previousTimestamp,
+            currentTimestamp: timestamp,
+            cutoffHz: settings.turnLowPassHz
+        )
+        state.filteredMagnitude = filteredMagnitude
+        state.lastValidMagnitude = gyroMagnitude
+        states[side] = state
+
+        let sign = sample.gz == 0 ? 0 : (sample.gz > 0 ? 1.0 : -1.0)
+        let signal = filteredMagnitude * sign
+        return TurnSignalResult(signal: signal, magnitude: filteredMagnitude, isValid: true)
+    }
+
+    private func isImbalanced(
+        gyroMagnitude: Double,
+        counterpartMagnitude: Double?,
+        state: inout TurnSignalSideState
+    ) -> Bool {
+        guard let counterpartMagnitude, counterpartMagnitude > 0 else {
+            state.imbalanceCount = 0
+            return false
+        }
+        if gyroMagnitude > counterpartMagnitude * settings.imbalanceRatio {
+            state.imbalanceCount += 1
+        } else {
+            state.imbalanceCount = 0
+        }
+        return state.imbalanceCount >= settings.imbalanceHoldSamples
+    }
+
+    private func applyHampelFilter(to value: Double, history: [Double]) -> Double {
+        guard history.count >= settings.hampelMinSamples else {
+            return value
+        }
+        let median = medianValue(from: history)
+        let deviations = history.map { abs($0 - median) }
+        let mad = medianValue(from: deviations)
+        guard mad > 0 else {
+            return value
+        }
+        if abs(value - median) > settings.hampelThreshold * mad {
+            return median
+        }
+        return value
+    }
+
+    private func applyLowPassFilter(
+        current: Double,
+        previous: Double?,
+        previousTimestamp: Date?,
+        currentTimestamp: Date,
+        cutoffHz: Double
+    ) -> Double {
+        guard let previous else {
+            return current
+        }
+        let dt = max(currentTimestamp.timeIntervalSince(previousTimestamp ?? currentTimestamp), settings.minDeltaTime)
+        let rc = 1.0 / (2.0 * Double.pi * cutoffHz)
+        let alpha = dt / (rc + dt)
+        return previous + alpha * (current - previous)
+    }
+
+    private func medianValue(from values: [Double]) -> Double {
+        let sorted = values.sorted()
+        guard !sorted.isEmpty else { return 0 }
+        let middle = sorted.count / 2
+        if sorted.count % 2 == 0 {
+            return (sorted[middle - 1] + sorted[middle]) / 2
+        }
+        return sorted[middle]
+    }
+}
+
+private struct TurnSignalFilterSettings {
+    let maxAccelG: Double = 8.0
+    let maxGyroRad: Double = 35.0
+    let imbalanceRatio: Double = 10.0
+    let imbalanceHoldSamples: Int = 3
+    let hampelWindowSize: Int = 31
+    let hampelMinSamples: Int = 7
+    let hampelThreshold: Double = 5.0
+    let turnLowPassHz: Double = 6.0
+    let minDeltaTime: TimeInterval = 1.0 / 100.0
+}
+
 private struct TurnDetectorSettings {
     let turnOnThreshold: Double = 25
     let turnOffThreshold: Double = 15
@@ -399,6 +568,9 @@ private struct TurnDetectorSettings {
     let turnStopHold: TimeInterval = 0.2
     let minTurnDuration: TimeInterval = 0.4
     let minTurnGap: TimeInterval = 0.3
+    let adaptiveWindowSize: Int = 200
+    let adaptiveMinSamples: Int = 30
+    let adaptiveMadMultiplier: Double = 2.5
 }
 
 private extension TurnDirection {
