@@ -306,12 +306,8 @@ final class StreamClient: NSObject, ObservableObject {
         }
     }
 
-    private var connectOptions: [String: Any] {
-        [
-            CBConnectPeripheralOptionNotifyOnConnectionKey: true,
-            CBConnectPeripheralOptionNotifyOnDisconnectionKey: true,
-            CBConnectPeripheralOptionNotifyOnNotificationKey: true
-        ]
+    private var connectOptions: [String: Any]? {
+        nil
     }
 
     private func resetConnectionState(statusText: String) {
