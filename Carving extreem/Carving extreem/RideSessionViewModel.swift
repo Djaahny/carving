@@ -1,6 +1,7 @@
 import AVFoundation
 import Combine
 import Foundation
+import MediaPlayer
 
 @MainActor
 final class RideSessionViewModel: ObservableObject {
@@ -26,6 +27,11 @@ final class RideSessionViewModel: ObservableObject {
     @Published var locationTrack: [LocationSample] = []
     @Published var turnCount = 0
     @Published var rawSensorSamples: [RawSensorSample] = []
+    @Published var canStartFromRemote = false {
+        didSet {
+            updateRemoteCommandAvailability()
+        }
+    }
 
     private var startDate: Date?
     private var timerCancellable: AnyCancellable?
@@ -41,6 +47,9 @@ final class RideSessionViewModel: ObservableObject {
     private let defaultEdgeThreshold = 60.0
     private let backgroundSampleInterval: TimeInterval = 0
     private let locationSampleInterval: TimeInterval = 0
+    private let nowPlayingCenter = MPNowPlayingInfoCenter.default()
+    private let remoteCommandCenter = MPRemoteCommandCenter.shared()
+    private var remoteCommandTargets: [Any] = []
 
     private let turnSettings = TurnDetectorSettings()
     private var recordedEdgeSamples: [EdgeSample] = []
@@ -61,6 +70,7 @@ final class RideSessionViewModel: ObservableObject {
     init() {
         let storedThreshold = UserDefaults.standard.object(forKey: edgeThresholdKey) as? Double
         edgeCalloutThreshold = storedThreshold ?? defaultEdgeThreshold
+        configureRemoteCommands()
     }
 
     func startRun(isCalibrated: Bool) {
@@ -103,7 +113,10 @@ final class RideSessionViewModel: ObservableObject {
                 guard let self, let startDate = self.startDate else { return }
                 self.elapsed = Date().timeIntervalSince(startDate)
                 self.handleTimeCallout()
+                self.updateNowPlayingInfo()
             }
+        updateNowPlayingInfo()
+        updateRemoteCommandAvailability()
     }
 
     func stopRun() {
@@ -112,6 +125,8 @@ final class RideSessionViewModel: ObservableObject {
         timerCancellable?.cancel()
         timerCancellable = nil
         deactivateAudioSession()
+        updateNowPlayingInfo()
+        updateRemoteCommandAvailability()
     }
 
     func ingest(
@@ -392,6 +407,62 @@ final class RideSessionViewModel: ObservableObject {
         lastEdgeCalloutTime = now
         let speedKmh = max(speedMetersPerSecond, 0) * 3.6
         speak("Edge angle \(Int(angle)) degrees at \(Int(speedKmh)) kilometers per hour")
+    }
+
+    private func configureRemoteCommands() {
+        remoteCommandCenter.playCommand.isEnabled = true
+        remoteCommandCenter.pauseCommand.isEnabled = true
+        remoteCommandCenter.stopCommand.isEnabled = true
+
+        remoteCommandTargets.append(
+            remoteCommandCenter.playCommand.addTarget { [weak self] _ in
+                guard let self else { return .commandFailed }
+                guard !self.isRunning else { return .success }
+                self.startRun(isCalibrated: self.canStartFromRemote)
+                return self.isRunning ? .success : .commandFailed
+            }
+        )
+
+        remoteCommandTargets.append(
+            remoteCommandCenter.pauseCommand.addTarget { [weak self] _ in
+                guard let self else { return .commandFailed }
+                guard self.isRunning else { return .success }
+                self.stopRun()
+                return .success
+            }
+        )
+
+        remoteCommandTargets.append(
+            remoteCommandCenter.stopCommand.addTarget { [weak self] _ in
+                guard let self else { return .commandFailed }
+                guard self.isRunning else { return .success }
+                self.stopRun()
+                return .success
+            }
+        )
+
+        updateRemoteCommandAvailability()
+    }
+
+    private func updateRemoteCommandAvailability() {
+        remoteCommandCenter.playCommand.isEnabled = canStartFromRemote && !isRunning
+        remoteCommandCenter.pauseCommand.isEnabled = isRunning
+        remoteCommandCenter.stopCommand.isEnabled = isRunning
+    }
+
+    private func updateNowPlayingInfo() {
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: "Carving Run",
+            MPMediaItemPropertyArtist: "Carving Extreem",
+            MPNowPlayingInfoPropertyIsLiveStream: true,
+            MPNowPlayingInfoPropertyPlaybackRate: isRunning ? 1.0 : 0.0,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: elapsed
+        ]
+        if startDate != nil {
+            info[MPMediaItemPropertyPlaybackDuration] = 0
+        }
+        nowPlayingCenter.nowPlayingInfo = info
+        nowPlayingCenter.playbackState = isRunning ? .playing : .paused
     }
 
     private func speak(_ text: String) {
