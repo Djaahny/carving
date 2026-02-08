@@ -15,13 +15,15 @@ final class RideLocationManager: NSObject, ObservableObject {
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBest
         manager.activityType = .fitness
+        manager.allowsBackgroundLocationUpdates = true
+        manager.pausesLocationUpdatesAutomatically = false
     }
 
     func startUpdates() {
         switch manager.authorizationStatus {
         case .notDetermined:
             status = "Requesting location access…"
-            manager.requestWhenInUseAuthorization()
+            manager.requestAlwaysAuthorization()
         case .restricted, .denied:
             status = "Location access denied"
         case .authorizedAlways, .authorizedWhenInUse:
