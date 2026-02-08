@@ -15,7 +15,7 @@ final class RideLocationManager: NSObject, ObservableObject {
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBest
         manager.activityType = .fitness
-        manager.allowsBackgroundLocationUpdates = true
+        manager.allowsBackgroundLocationUpdates = false
         manager.pausesLocationUpdatesAutomatically = false
     }
 
@@ -27,6 +27,7 @@ final class RideLocationManager: NSObject, ObservableObject {
         case .restricted, .denied:
             status = "Location access denied"
         case .authorizedAlways, .authorizedWhenInUse:
+            manager.allowsBackgroundLocationUpdates = (manager.authorizationStatus == .authorizedAlways)
             status = "GPS active"
             manager.startUpdatingLocation()
         @unknown default:
