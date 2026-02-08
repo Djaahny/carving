@@ -72,9 +72,10 @@ struct ContentView: View {
                     sensorBClient.connect()
                 }
             case .background:
-                guard !session.isRunning else { return }
-                sensorAClient.disconnect()
-                sensorBClient.disconnect()
+                if !session.isRunning {
+                    sensorAClient.disconnect()
+                    sensorBClient.disconnect()
+                }
             default:
                 break
             }
@@ -1013,6 +1014,7 @@ private struct CalibrationFlowView: View {
 
 private struct RunSessionView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var metricStore: MetricSelectionStore
     @ObservedObject var session: RideSessionViewModel
     @ObservedObject var primaryClient: StreamClient
@@ -1022,7 +1024,6 @@ private struct RunSessionView: View {
     @ObservedObject var locationManager: RideLocationManager
     @ObservedObject var runStore: RunDataStore
     @State private var saveError: String?
-    private let edgeUpdateInterval: TimeInterval = 0.05
     private let edgeGapThreshold: TimeInterval = 0.75
 
     var body: some View {
@@ -1104,14 +1105,14 @@ private struct RunSessionView: View {
             }
         }
         .interactiveDismissDisabled(session.isRunning)
-        .onReceive(primaryEdgePublisher) { angle in
-            guard session.isRunning, let sample = primaryClient.latestSample else { return }
-            ingestSample(from: primaryClient, sample: sample, edgeAngle: angle, fallbackSide: .left)
+        .onReceive(primaryClient.samplePublisher) { streamedSample in
+            guard session.isRunning, !session.isStandby else { return }
+            ingestSample(from: primaryClient, streamedSample: streamedSample, fallbackSide: .left)
         }
-        .onReceive(secondaryEdgePublisher) { angle in
+        .onReceive(secondarySamplePublisher) { streamedSample in
+            guard session.isRunning, !session.isStandby else { return }
             guard let secondaryClient else { return }
-            guard session.isRunning, let sample = secondaryClient.latestSample else { return }
-            ingestSample(from: secondaryClient, sample: sample, edgeAngle: angle, fallbackSide: .right)
+            ingestSample(from: secondaryClient, streamedSample: streamedSample, fallbackSide: .right)
         }
         .onReceive(locationManager.$latestLocation) { location in
             guard session.isRunning, let location else { return }
@@ -1130,12 +1131,12 @@ private struct RunSessionView: View {
         } message: {
             Text(saveError ?? "Unknown error")
         }
-    }
-
-    private var primaryEdgePublisher: AnyPublisher<Double, Never> {
-        primaryClient.$latestEdgeAngle
-            .throttle(for: .seconds(edgeUpdateInterval), scheduler: RunLoop.main, latest: true)
-            .eraseToAnyPublisher()
+        .onAppear {
+            handleScenePhaseChange(scenePhase)
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            handleScenePhaseChange(newPhase)
+        }
     }
 
     private var runStats: some View {
@@ -1302,7 +1303,11 @@ private struct RunSessionView: View {
         return segments
     }
 
-    private func ingestSample(from client: StreamClient, sample: SensorSample, edgeAngle: Double, fallbackSide: SensorSide) {
+    private func ingestSample(
+        from client: StreamClient,
+        streamedSample: StreamedSample,
+        fallbackSide: SensorSide
+    ) {
         let speed = max(locationManager.speedMetersPerSecond, 0)
         let location = locationManager.latestLocation.map { location in
             LocationSample(
@@ -1315,14 +1320,15 @@ private struct RunSessionView: View {
             )
         }
         let side = resolvedSide(for: client, fallback: fallbackSide)
-        let calibratedSample = client.calibratedSample(from: sample)
+        let calibratedSample = client.calibratedSample(from: streamedSample.sample)
         session.ingest(
             sample: calibratedSample,
-            edgeAngle: edgeAngle,
+            edgeAngle: streamedSample.edgeAngle,
             speedMetersPerSecond: speed,
             location: location,
             side: side,
-            rawSample: sample
+            at: streamedSample.timestamp,
+            rawSample: streamedSample.sample
         )
     }
 
@@ -1339,9 +1345,8 @@ private struct RunSessionView: View {
         return .single
     }
 
-    private var secondaryEdgePublisher: AnyPublisher<Double, Never> {
-        secondaryClient?.$latestEdgeAngle
-            .throttle(for: .seconds(edgeUpdateInterval), scheduler: RunLoop.main, latest: true)
+    private var secondarySamplePublisher: AnyPublisher<StreamedSample, Never> {
+        secondaryClient?.samplePublisher
             .eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()
     }
 
@@ -1361,6 +1366,40 @@ private struct RunSessionView: View {
         .padding(12)
         .background(Color(.systemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func handleScenePhaseChange(_ phase: ScenePhase) {
+        switch phase {
+        case .background, .inactive:
+            guard session.isRunning else { return }
+            session.setStandby(true)
+            primaryClient.setStandbyBuffering(true)
+            secondaryClient?.setStandbyBuffering(true)
+        case .active:
+            guard session.isRunning else { return }
+            primaryClient.setStandbyBuffering(false)
+            secondaryClient?.setStandbyBuffering(false)
+            session.setStandby(false)
+            flushStandbyBuffers()
+        default:
+            break
+        }
+    }
+
+    private func flushStandbyBuffers() {
+        var bufferedSamples: [(StreamClient, StreamedSample)] = []
+        bufferedSamples.append(
+            contentsOf: primaryClient.drainStandbyBuffer().map { (primaryClient, $0) }
+        )
+        if let secondaryClient {
+            bufferedSamples.append(
+                contentsOf: secondaryClient.drainStandbyBuffer().map { (secondaryClient, $0) }
+            )
+        }
+        let sortedSamples = bufferedSamples.sorted { $0.1.timestamp < $1.1.timestamp }
+        for (client, streamedSample) in sortedSamples {
+            ingestSample(from: client, streamedSample: streamedSample, fallbackSide: client === primaryClient ? .left : .right)
+        }
     }
 
     private func timeString(from interval: TimeInterval) -> String {

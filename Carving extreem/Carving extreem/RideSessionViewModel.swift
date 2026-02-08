@@ -32,6 +32,7 @@ final class RideSessionViewModel: ObservableObject {
             updateRemoteCommandAvailability()
         }
     }
+    @Published var isStandby = false
 
     private var startDate: Date?
     private var timerCancellable: AnyCancellable?
@@ -47,6 +48,7 @@ final class RideSessionViewModel: ObservableObject {
     private let defaultEdgeThreshold = 60.0
     private let backgroundSampleInterval: TimeInterval = 0
     private let locationSampleInterval: TimeInterval = 0
+    private let liveEdgeRefreshInterval: TimeInterval = 1.0
     private let nowPlayingCenter = MPNowPlayingInfoCenter.default()
     private let remoteCommandCenter = MPRemoteCommandCenter.shared()
     private var remoteCommandTargets: [Any] = []
@@ -66,6 +68,7 @@ final class RideSessionViewModel: ObservableObject {
     private var latestPrimarySide: SensorSide?
     private var latestRawSamplesBySide: [SensorSide: SensorSample] = [:]
     private var turnSignalProcessor = TurnSignalProcessor()
+    private var pendingEdgeSamples: [EdgeSample] = []
 
     init() {
         let storedThreshold = UserDefaults.standard.object(forKey: edgeThresholdKey) as? Double
@@ -106,14 +109,17 @@ final class RideSessionViewModel: ObservableObject {
         latestPrimarySample = nil
         latestPrimarySide = nil
         latestRawSamplesBySide = [:]
+        pendingEdgeSamples = []
+        isStandby = false
 
-        timerCancellable = Timer.publish(every: 1, on: .main, in: .common)
+        timerCancellable = Timer.publish(every: liveEdgeRefreshInterval, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
                 guard let self, let startDate = self.startDate else { return }
                 self.elapsed = Date().timeIntervalSince(startDate)
                 self.handleTimeCallout()
                 self.updateNowPlayingInfo()
+                self.flushPendingEdgeSamples()
             }
         updateNowPlayingInfo()
         updateRemoteCommandAvailability()
@@ -122,11 +128,20 @@ final class RideSessionViewModel: ObservableObject {
     func stopRun() {
         isRunning = false
         isStopped = true
+        isStandby = false
+        flushPendingEdgeSamples()
         timerCancellable?.cancel()
         timerCancellable = nil
         deactivateAudioSession()
         updateNowPlayingInfo()
         updateRemoteCommandAvailability()
+    }
+
+    func setStandby(_ enabled: Bool) {
+        isStandby = enabled
+        if !enabled {
+            flushPendingEdgeSamples()
+        }
     }
 
     func ingest(
@@ -148,9 +163,8 @@ final class RideSessionViewModel: ObservableObject {
         latestSpeedMetersPerSecond = speedMetersPerSecond
         let edgeAngles = edgeAnglesForRecording()
         let edgeSample = EdgeSample(timestamp: date, leftAngle: edgeAngles.left, rightAngle: edgeAngles.right)
-        edgeSamples.append(edgeSample)
+        pendingEdgeSamples.append(edgeSample)
         recordedEdgeSamples.append(edgeSample)
-        pruneSamples()
         handleEdgeCallout(angle: edgeAngle, speedMetersPerSecond: speedMetersPerSecond)
 
         if let location {
@@ -194,6 +208,16 @@ final class RideSessionViewModel: ObservableObject {
                 )
             )
         }
+    }
+
+    private func flushPendingEdgeSamples() {
+        guard !pendingEdgeSamples.isEmpty else {
+            pruneSamples()
+            return
+        }
+        edgeSamples.append(contentsOf: pendingEdgeSamples)
+        pendingEdgeSamples.removeAll()
+        pruneSamples()
     }
 
     func ingestLocation(_ location: LocationSample, at date: Date? = nil) {
