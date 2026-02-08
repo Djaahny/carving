@@ -11,6 +11,13 @@ struct SensorSample: Equatable {
     let gz: Double
 }
 
+struct StreamedSample: Equatable {
+    let timestamp: Date
+    let sample: SensorSample
+    let edgeAngle: Double
+    let signedEdgeAngle: Double
+}
+
 struct EdgeSample: Identifiable, Codable {
     var id: UUID
     let timestamp: Date
@@ -220,6 +227,10 @@ final class StreamClient: NSObject, ObservableObject {
     @Published private(set) var lastShockMagnitude: Double = 0
     @Published private(set) var connectedIdentifier: String?
 
+    var samplePublisher: AnyPublisher<StreamedSample, Never> {
+        sampleSubject.eraseToAnyPublisher()
+    }
+
     private let deviceName: String
     private let serviceUUID = CBUUID(string: "7a3f0001-3c12-4b50-8d32-9f8c8a3d8f31")
     private let dataCharacteristicUUID = CBUUID(string: "7a3f0002-3c12-4b50-8d32-9f8c8a3d8f31")
@@ -252,6 +263,9 @@ final class StreamClient: NSObject, ObservableObject {
     private var lastSampleTimestamp: Date?
     private var pendingStationaryCalibration: PendingCalibration?
     private var pendingForwardCalibration: PendingForwardCalibration?
+    private var standbySamples: [StreamedSample] = []
+    private var isBufferingStandbySamples = false
+    private let sampleSubject = PassthroughSubject<StreamedSample, Never>()
 
     init(deviceName: String = "Carving-Extreem", storageSuffix: String) {
         self.deviceName = deviceName
@@ -329,6 +343,8 @@ final class StreamClient: NSObject, ObservableObject {
         smoothedEdgeAngle = nil
         smoothedSignedEdgeAngle = nil
         lastSampleTimestamp = nil
+        standbySamples.removeAll()
+        isBufferingStandbySamples = false
     }
 
     private func retrieveCachedPeripheral() -> CBPeripheral? {
@@ -444,6 +460,17 @@ final class StreamClient: NSObject, ObservableObject {
             smoothedSignedEdgeAngle = rawSignedEdgeAngle
         }
         latestSignedEdgeAngle = smoothedSignedEdgeAngle ?? rawSignedEdgeAngle
+        let streamedSample = StreamedSample(
+            timestamp: now,
+            sample: sample,
+            edgeAngle: latestEdgeAngle,
+            signedEdgeAngle: latestSignedEdgeAngle
+        )
+        if isBufferingStandbySamples {
+            standbySamples.append(streamedSample)
+        } else {
+            sampleSubject.send(streamedSample)
+        }
     }
 
     private func edgeAngleSmoothingAlpha(for deltaTime: TimeInterval?) -> Double {
@@ -498,6 +525,16 @@ final class StreamClient: NSObject, ObservableObject {
             return .empty
         }
         return state
+    }
+
+    func setStandbyBuffering(_ enabled: Bool) {
+        isBufferingStandbySamples = enabled
+    }
+
+    func drainStandbyBuffer() -> [StreamedSample] {
+        let buffer = standbySamples
+        standbySamples.removeAll()
+        return buffer
     }
 
     func captureStationaryCalibration(samples: [SensorSample]) -> CalibrationResult {
