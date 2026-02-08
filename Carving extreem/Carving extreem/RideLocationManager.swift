@@ -9,8 +9,10 @@ final class RideLocationManager: NSObject, ObservableObject {
     @Published private(set) var latestLocation: CLLocation?
 
     private let manager = CLLocationManager()
+    private let allowsBackgroundLocation: Bool
 
     override init() {
+        allowsBackgroundLocation = Self.hasBackgroundMode("location")
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBest
@@ -23,11 +25,15 @@ final class RideLocationManager: NSObject, ObservableObject {
         switch manager.authorizationStatus {
         case .notDetermined:
             status = "Requesting location access…"
-            manager.requestWhenInUseAuthorization()
+            if allowsBackgroundLocation {
+                manager.requestAlwaysAuthorization()
+            } else {
+                manager.requestWhenInUseAuthorization()
+            }
         case .restricted, .denied:
             status = "Location access denied"
         case .authorizedAlways, .authorizedWhenInUse:
-            manager.allowsBackgroundLocationUpdates = false
+            manager.allowsBackgroundLocationUpdates = allowsBackgroundLocation
             status = "GPS active"
             manager.startUpdatingLocation()
         @unknown default:
@@ -37,7 +43,15 @@ final class RideLocationManager: NSObject, ObservableObject {
 
     func stopUpdates() {
         manager.stopUpdatingLocation()
+        manager.allowsBackgroundLocationUpdates = false
         status = ""
+    }
+
+    private static func hasBackgroundMode(_ mode: String) -> Bool {
+        guard let modes = Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String] else {
+            return false
+        }
+        return modes.contains(mode)
     }
 }
 
