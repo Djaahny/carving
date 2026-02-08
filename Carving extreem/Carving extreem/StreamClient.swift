@@ -263,8 +263,6 @@ final class StreamClient: NSObject, ObservableObject {
     private var lastSampleTimestamp: Date?
     private var pendingStationaryCalibration: PendingCalibration?
     private var pendingForwardCalibration: PendingForwardCalibration?
-    private var standbySamples: [StreamedSample] = []
-    private var isBufferingStandbySamples = false
     private let sampleSubject = PassthroughSubject<StreamedSample, Never>()
 
     init(deviceName: String = "Carving-Extreem", storageSuffix: String) {
@@ -277,10 +275,7 @@ final class StreamClient: NSObject, ObservableObject {
         super.init()
         calibrationState = loadCalibration()
         lastKnownSensorName = UserDefaults.standard.string(forKey: savedPeripheralNameKey)
-        let options = Self.bluetoothCentralOptions(
-            restorationIdentifier: restorationIdentifier,
-            allowsBackgroundBluetooth: allowsBackgroundBluetooth
-        )
+        let options = Self.bluetoothCentralOptions(restorationIdentifier: restorationIdentifier)
         centralManager = CBCentralManager(delegate: self, queue: nil, options: options)
     }
 
@@ -343,8 +338,6 @@ final class StreamClient: NSObject, ObservableObject {
         smoothedEdgeAngle = nil
         smoothedSignedEdgeAngle = nil
         lastSampleTimestamp = nil
-        standbySamples.removeAll()
-        isBufferingStandbySamples = false
     }
 
     private func retrieveCachedPeripheral() -> CBPeripheral? {
@@ -401,11 +394,7 @@ final class StreamClient: NSObject, ObservableObject {
         )
     }
 
-    private static func bluetoothCentralOptions(
-        restorationIdentifier: String,
-        allowsBackgroundBluetooth: Bool
-    ) -> [String: Any]? {
-        guard allowsBackgroundBluetooth else { return nil }
+    private static func bluetoothCentralOptions(restorationIdentifier: String) -> [String: Any]? {
         return [CBCentralManagerOptionRestoreIdentifierKey: restorationIdentifier]
     }
 
@@ -466,11 +455,7 @@ final class StreamClient: NSObject, ObservableObject {
             edgeAngle: latestEdgeAngle,
             signedEdgeAngle: latestSignedEdgeAngle
         )
-        if isBufferingStandbySamples {
-            standbySamples.append(streamedSample)
-        } else {
-            sampleSubject.send(streamedSample)
-        }
+        sampleSubject.send(streamedSample)
     }
 
     private func edgeAngleSmoothingAlpha(for deltaTime: TimeInterval?) -> Double {
@@ -525,16 +510,6 @@ final class StreamClient: NSObject, ObservableObject {
             return .empty
         }
         return state
-    }
-
-    func setStandbyBuffering(_ enabled: Bool) {
-        isBufferingStandbySamples = enabled
-    }
-
-    func drainStandbyBuffer() -> [StreamedSample] {
-        let buffer = standbySamples
-        standbySamples.removeAll()
-        return buffer
     }
 
     func captureStationaryCalibration(samples: [SensorSample]) -> CalibrationResult {

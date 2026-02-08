@@ -1106,11 +1106,11 @@ private struct RunSessionView: View {
         }
         .interactiveDismissDisabled(session.isRunning)
         .onReceive(primaryClient.samplePublisher) { streamedSample in
-            guard session.isRunning, !session.isStandby else { return }
+            guard session.isRunning else { return }
             ingestSample(from: primaryClient, streamedSample: streamedSample, fallbackSide: .left)
         }
         .onReceive(secondarySamplePublisher) { streamedSample in
-            guard session.isRunning, !session.isStandby else { return }
+            guard session.isRunning else { return }
             guard let secondaryClient else { return }
             ingestSample(from: secondaryClient, streamedSample: streamedSample, fallbackSide: .right)
         }
@@ -1371,34 +1371,11 @@ private struct RunSessionView: View {
     private func handleScenePhaseChange(_ phase: ScenePhase) {
         switch phase {
         case .background, .inactive:
-            guard session.isRunning else { return }
-            session.setStandby(true)
-            primaryClient.setStandbyBuffering(true)
-            secondaryClient?.setStandbyBuffering(true)
+            break
         case .active:
-            guard session.isRunning else { return }
-            primaryClient.setStandbyBuffering(false)
-            secondaryClient?.setStandbyBuffering(false)
-            session.setStandby(false)
-            flushStandbyBuffers()
+            break
         default:
             break
-        }
-    }
-
-    private func flushStandbyBuffers() {
-        var bufferedSamples: [(StreamClient, StreamedSample)] = []
-        bufferedSamples.append(
-            contentsOf: primaryClient.drainStandbyBuffer().map { (primaryClient, $0) }
-        )
-        if let secondaryClient {
-            bufferedSamples.append(
-                contentsOf: secondaryClient.drainStandbyBuffer().map { (secondaryClient, $0) }
-            )
-        }
-        let sortedSamples = bufferedSamples.sorted { $0.1.timestamp < $1.1.timestamp }
-        for (client, streamedSample) in sortedSamples {
-            ingestSample(from: client, streamedSample: streamedSample, fallbackSide: client === primaryClient ? .left : .right)
         }
     }
 
