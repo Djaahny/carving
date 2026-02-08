@@ -195,12 +195,16 @@ final class RideSessionViewModel: ObservableObject {
         if rawDataRecordingEnabled {
             let leftSample = latestRawSamplesBySide[.left] ?? latestRawSamplesBySide[.single]
             let rightSample = latestRawSamplesBySide[.right]
+            let locationSpeed = location?.speed
+            let fallbackSpeed = max(latestLocationSample?.speed ?? speedMetersPerSecond, 0)
+            let rawSpeed = locationSpeed ?? fallbackSpeed
+            let sanitizedSpeed = rawSpeed >= 0 ? rawSpeed : fallbackSpeed
             rawSensorSamples.append(
                 RawSensorSample(
                     timestamp: date,
                     leftSample: leftSample,
                     rightSample: rightSample,
-                    speedMetersPerSecond: speedMetersPerSecond,
+                    speedMetersPerSecond: sanitizedSpeed,
                     latitude: location?.latitude,
                     longitude: location?.longitude,
                     altitude: location?.altitude,
@@ -268,7 +272,9 @@ final class RideSessionViewModel: ObservableObject {
                 currentTurnPeakSignal * turnSettings.turnOffPeakRatio
             )
             let edgeExitThreshold = turnSettings.edgeAngleExitThreshold + turnSettings.edgeAngleExitMargin
-            if abs(turnSignal) < dynamicTurnOffThreshold, edgeAngle <= edgeExitThreshold {
+            let exitByEdgeAngle = edgeAngle <= edgeExitThreshold
+            let exitBySignalFloor = abs(turnSignal) <= turnSettings.turnOffSignalFloor
+            if abs(turnSignal) < dynamicTurnOffThreshold, (exitByEdgeAngle || exitBySignalFloor) {
                 if turnEndCandidate == nil {
                     turnEndCandidate = date
                 }
@@ -643,7 +649,7 @@ private struct TurnSignalProcessor {
 
 private struct TurnSignalFilterSettings {
     let maxAccelG: Double = 8.0
-    let maxGyroRad: Double = 35.0
+    let maxGyroRad: Double = 250.0
     let imbalanceRatio: Double = 10.0
     let imbalanceHoldSamples: Int = 3
     let hampelWindowSize: Int = 31
@@ -654,18 +660,19 @@ private struct TurnSignalFilterSettings {
 }
 
 private struct TurnDetectorSettings {
-    let turnOnThreshold: Double = 25
-    let turnOffThreshold: Double = 15
+    let turnOnThreshold: Double = 20
+    let turnOffThreshold: Double = 12
+    let turnOffSignalFloor: Double = 8
     let edgeAngleExitThreshold: Double = 5
-    let edgeAngleExitMargin: Double = 3
+    let edgeAngleExitMargin: Double = 4
     let turnOffPeakRatio: Double = 0.35
-    let turnStartHold: TimeInterval = 0.15
-    let turnStopHold: TimeInterval = 0.2
-    let minTurnDuration: TimeInterval = 0.4
-    let minTurnGap: TimeInterval = 0.3
+    let turnStartHold: TimeInterval = 0.12
+    let turnStopHold: TimeInterval = 0.15
+    let minTurnDuration: TimeInterval = 0.3
+    let minTurnGap: TimeInterval = 0.2
     let adaptiveWindowSize: Int = 200
     let adaptiveMinSamples: Int = 30
-    let adaptiveMadMultiplier: Double = 2.5
+    let adaptiveMadMultiplier: Double = 1.0
 }
 
 private extension TurnDirection {
