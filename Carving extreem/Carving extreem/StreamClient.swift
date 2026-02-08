@@ -229,6 +229,8 @@ final class StreamClient: NSObject, ObservableObject {
     private let gravity = 9.80665
     private let radiansToDegrees = 180.0 / Double.pi
     private let edgeAngleSmoothingAlpha = 0.18
+    private let edgeAngleSmoothingTimeConstant: TimeInterval = 0.1
+    private let maxEdgeAngleSmoothingGap: TimeInterval = 0.35
     private let shockThreshold = 2.5
     private let shockCooldown: TimeInterval = 0.8
     private let rotationEpsilon = 1e-6
@@ -245,6 +247,7 @@ final class StreamClient: NSObject, ObservableObject {
     private var dataCharacteristic: CBCharacteristic?
     private var smoothedEdgeAngle: Double?
     private var smoothedSignedEdgeAngle: Double?
+    private var lastSampleTimestamp: Date?
     private var pendingStationaryCalibration: PendingCalibration?
     private var pendingForwardCalibration: PendingForwardCalibration?
 
@@ -303,6 +306,9 @@ final class StreamClient: NSObject, ObservableObject {
         peripheral = nil
         dataCharacteristic = nil
         connectedIdentifier = nil
+        smoothedEdgeAngle = nil
+        smoothedSignedEdgeAngle = nil
+        lastSampleTimestamp = nil
     }
 
     private func retrieveCachedPeripheral() -> CBPeripheral? {
@@ -373,6 +379,7 @@ final class StreamClient: NSObject, ObservableObject {
             return
         }
 
+        let now = Date()
         let sample = SensorSample(
             ax: ax / gravity,
             ay: ay / gravity,
@@ -381,24 +388,38 @@ final class StreamClient: NSObject, ObservableObject {
             gy: gy * radiansToDegrees,
             gz: gz * radiansToDegrees
         )
+        let deltaTime = lastSampleTimestamp.map { now.timeIntervalSince($0) }
+        lastSampleTimestamp = now
         latestSample = sample
         updateShockState(for: sample)
         updateCalibratedAccel(from: sample)
         let edgeAngles = computeEdgeAngles(from: sample)
         let rawEdgeAngle = edgeAngles.magnitude
+        let smoothingAlpha = edgeAngleSmoothingAlpha(for: deltaTime)
         if let smoothedEdgeAngle {
-            self.smoothedEdgeAngle = smoothedEdgeAngle + edgeAngleSmoothingAlpha * (rawEdgeAngle - smoothedEdgeAngle)
+            self.smoothedEdgeAngle = smoothedEdgeAngle + smoothingAlpha * (rawEdgeAngle - smoothedEdgeAngle)
         } else {
             smoothedEdgeAngle = rawEdgeAngle
         }
         latestEdgeAngle = smoothedEdgeAngle ?? rawEdgeAngle
         let rawSignedEdgeAngle = edgeAngles.signed
         if let smoothedSignedEdgeAngle {
-            self.smoothedSignedEdgeAngle = smoothedSignedEdgeAngle + edgeAngleSmoothingAlpha * (rawSignedEdgeAngle - smoothedSignedEdgeAngle)
+            self.smoothedSignedEdgeAngle = smoothedSignedEdgeAngle + smoothingAlpha * (rawSignedEdgeAngle - smoothedSignedEdgeAngle)
         } else {
             smoothedSignedEdgeAngle = rawSignedEdgeAngle
         }
         latestSignedEdgeAngle = smoothedSignedEdgeAngle ?? rawSignedEdgeAngle
+    }
+
+    private func edgeAngleSmoothingAlpha(for deltaTime: TimeInterval?) -> Double {
+        guard let deltaTime, deltaTime > 0 else {
+            return edgeAngleSmoothingAlpha
+        }
+        if deltaTime >= maxEdgeAngleSmoothingGap {
+            return 1.0
+        }
+        let alpha = 1.0 - exp(-deltaTime / edgeAngleSmoothingTimeConstant)
+        return min(max(alpha, 0.0), 1.0)
     }
 
     private func updateShockState(for sample: SensorSample) {
