@@ -995,6 +995,7 @@ private struct CalibrationFlowView: View {
 
 private struct RunSessionView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var metricStore: MetricSelectionStore
     @ObservedObject var session: RideSessionViewModel
     @ObservedObject var primaryClient: StreamClient
@@ -1121,6 +1122,10 @@ private struct RunSessionView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(saveError ?? "Unknown error")
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase != .active, session.isRunning else { return }
+            session.stopRun()
         }
     }
 
