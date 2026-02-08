@@ -22,6 +22,7 @@ struct ContentView: View {
     @State private var showCalibrationRequired = false
     @State private var showMetricSelection = false
     @State private var showSensorAssignment = false
+    @Environment(\.scenePhase) private var scenePhase
     @State private var calibrationTarget: CalibrationTarget?
     @State private var didAutoConnect = false
     @State private var showRunSession = false
@@ -50,10 +51,6 @@ struct ContentView: View {
             }
             .navigationTitle("Carving Extreem")
         }
-        .onDisappear {
-            sensorAClient.disconnect()
-            sensorBClient.disconnect()
-        }
         .onAppear {
             guard !didAutoConnect else { return }
             didAutoConnect = true
@@ -63,6 +60,24 @@ struct ContentView: View {
             if sensorMode == .dual, sensorBClient.lastKnownSensorName != nil {
                 sensorBClient.connect()
             }
+            session.canStartFromRemote = isCalibratedForRun
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            switch newPhase {
+            case .active:
+                if sensorAClient.lastKnownSensorName != nil {
+                    sensorAClient.connect()
+                }
+                if sensorMode == .dual, sensorBClient.lastKnownSensorName != nil {
+                    sensorBClient.connect()
+                }
+            case .background:
+                guard !session.isRunning else { return }
+                sensorAClient.disconnect()
+                sensorBClient.disconnect()
+            default:
+                break
+            }
         }
         .onChange(of: session.isRunning) { _, isRunning in
             if isRunning {
@@ -70,6 +85,9 @@ struct ContentView: View {
             } else {
                 locationManager.stopUpdates()
             }
+        }
+        .onChange(of: isCalibratedForRun) { _, newValue in
+            session.canStartFromRemote = newValue
         }
         .onChange(of: sensorMode) { _, newValue in
             if newValue == .dual, sensorBClient.lastKnownSensorName != nil {

@@ -226,6 +226,7 @@ final class StreamClient: NSObject, ObservableObject {
     private let savedPeripheralKey: String
     private let savedPeripheralNameKey: String
     private let calibrationKey: String
+    private let restorationIdentifier: String
     private let gravity = 9.80665
     private let radiansToDegrees = 180.0 / Double.pi
     private let edgeAngleSmoothingAlpha = 0.18
@@ -256,10 +257,15 @@ final class StreamClient: NSObject, ObservableObject {
         savedPeripheralKey = "lastPeripheralIdentifier.\(storageSuffix)"
         savedPeripheralNameKey = "lastPeripheralName.\(storageSuffix)"
         calibrationKey = "calibrationState.\(storageSuffix)"
+        restorationIdentifier = "carving.streamclient.\(storageSuffix)"
         super.init()
         calibrationState = loadCalibration()
         lastKnownSensorName = UserDefaults.standard.string(forKey: savedPeripheralNameKey)
-        centralManager = CBCentralManager(delegate: self, queue: nil)
+        centralManager = CBCentralManager(
+            delegate: self,
+            queue: nil,
+            options: [CBCentralManagerOptionRestoreIdentifierKey: restorationIdentifier]
+        )
     }
 
     func connect() {
@@ -276,13 +282,16 @@ final class StreamClient: NSObject, ObservableObject {
             status = "Connecting to \(cachedPeripheral.name ?? deviceName)…"
             peripheral = cachedPeripheral
             cachedPeripheral.delegate = self
-            centralManager.connect(cachedPeripheral, options: nil)
+            centralManager.connect(cachedPeripheral, options: connectOptions)
             return
         }
 
         status = "Scanning for \(deviceName)…"
         isScanning = true
-        centralManager.scanForPeripherals(withServices: [serviceUUID], options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+        centralManager.scanForPeripherals(
+            withServices: [serviceUUID],
+            options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+        )
     }
 
     func disconnect() {
@@ -298,6 +307,14 @@ final class StreamClient: NSObject, ObservableObject {
             centralManager.stopScan()
             isScanning = false
         }
+    }
+
+    private var connectOptions: [String: Any] {
+        [
+            CBConnectPeripheralOptionNotifyOnConnectionKey: true,
+            CBConnectPeripheralOptionNotifyOnDisconnectionKey: true,
+            CBConnectPeripheralOptionNotifyOnNotificationKey: true
+        ]
     }
 
     private func resetConnectionState(statusText: String) {
@@ -841,6 +858,24 @@ extension StreamClient: CBCentralManagerDelegate {
         }
     }
 
+    func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
+        if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral],
+           let restored = peripherals.first {
+            peripheral = restored
+            restored.delegate = self
+            status = "Restored \(restored.name ?? deviceName)"
+            central.connect(restored, options: connectOptions)
+            return
+        }
+
+        if let services = dict[CBCentralManagerRestoredStateScanServicesKey] as? [CBUUID] {
+            status = "Restoring scan…"
+            isScanning = true
+            let options = dict[CBCentralManagerRestoredStateScanOptionsKey] as? [String: Any]
+            central.scanForPeripherals(withServices: services, options: options)
+        }
+    }
+
     func centralManager(
         _ central: CBCentralManager,
         didDiscover peripheral: CBPeripheral,
@@ -856,7 +891,7 @@ extension StreamClient: CBCentralManagerDelegate {
         status = "Connecting to \(deviceName)…"
         self.peripheral = peripheral
         peripheral.delegate = self
-        central.connect(peripheral, options: nil)
+        central.connect(peripheral, options: connectOptions)
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
