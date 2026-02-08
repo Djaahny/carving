@@ -257,6 +257,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "This app connects to the Carving-Extreem sensor over Bluetooth.";
+				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "This app connects to the Carving-Extreem sensor over Bluetooth.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Location is used to record your run even when the app is in the background.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Location is used to show your GPS speed during rides.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -293,6 +294,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "This app connects to the Carving-Extreem sensor over Bluetooth.";
+				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "This app connects to the Carving-Extreem sensor over Bluetooth.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Location is used to record your run even when the app is in the background.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Location is used to show your GPS speed during rides.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

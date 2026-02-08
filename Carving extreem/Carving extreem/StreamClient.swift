@@ -261,11 +261,8 @@ final class StreamClient: NSObject, ObservableObject {
         super.init()
         calibrationState = loadCalibration()
         lastKnownSensorName = UserDefaults.standard.string(forKey: savedPeripheralNameKey)
-        centralManager = CBCentralManager(
-            delegate: self,
-            queue: nil,
-            options: [CBCentralManagerOptionRestoreIdentifierKey: restorationIdentifier]
-        )
+        let options = Self.bluetoothCentralOptions(restorationIdentifier: restorationIdentifier)
+        centralManager = CBCentralManager(delegate: self, queue: nil, options: options)
     }
 
     func connect() {
@@ -380,6 +377,18 @@ final class StreamClient: NSObject, ObservableObject {
             gyroInDeg[1],
             gyroInDeg[2]
         )
+    }
+
+    private static func bluetoothCentralOptions(restorationIdentifier: String) -> [String: Any]? {
+        guard hasBackgroundMode("bluetooth-central") else { return nil }
+        return [CBCentralManagerOptionRestoreIdentifierKey: restorationIdentifier]
+    }
+
+    private static func hasBackgroundMode(_ mode: String) -> Bool {
+        guard let modes = Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String] else {
+            return false
+        }
+        return modes.contains(mode)
     }
 
     private func updateSample(from raw: String) {
